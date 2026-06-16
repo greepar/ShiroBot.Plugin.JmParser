@@ -1,0 +1,104 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:views="using:ShiroBot.JmParser.Views"
+             x:Class="ShiroBot.JmParser.Views.PreviewCard"
+             x:DataType="views:PreviewCardViewModel"
+             Width="390" Height="600"
+             Background="Transparent"
+             >
+
+<UserControl.Resources>
+    <ResourceDictionary>
+        <ResourceDictionary.ThemeDictionaries>
+            <!-- 浅色模式资源 -->
+            <ResourceDictionary x:Key="Light">
+                <SolidColorBrush x:Key="CoverDimBrush" Color="#00000000" />
+                <SolidColorBrush x:Key="PrimaryTextBrush" Color="#FFFFFFFF" />
+                <SolidColorBrush x:Key="SecondaryTextBrush" Color="#E8FFFFFF" />
+                <!-- 浅色模式下，JM号背景为20%不透明度的黑色 -->
+                <SolidColorBrush x:Key="TagBackgroundBrush" Color="#33000000" />
+                <SolidColorBrush x:Key="TagTextBrush" Color="#FFFFFFFF" />
+                <Color x:Key="BottomGradientStartColor">#00000000</Color>
+                <Color x:Key="BottomGradientEndColor">#B0000000</Color>
+            </ResourceDictionary>
+
+            <!-- 深色模式资源 -->
+            <ResourceDictionary x:Key="Dark">
+                <!-- 深色模式下，给封面加一层35%的黑色遮罩，降低整体亮度 -->
+                <SolidColorBrush x:Key="CoverDimBrush" Color="#59000000" />
+                <!-- 文字使用稍微柔和的白色，避免刺眼 -->
+                <SolidColorBrush x:Key="PrimaryTextBrush" Color="#E6FFFFFF" />
+                <SolidColorBrush x:Key="SecondaryTextBrush" Color="#99FFFFFF" />
+                <!-- 深色模式下，JM号背景使用20%不透明度的白色，带有一点玻璃质感 -->
+                <SolidColorBrush x:Key="TagBackgroundBrush" Color="#33FFFFFF" />
+                <SolidColorBrush x:Key="TagTextBrush" Color="#E6FFFFFF" />
+                <Color x:Key="BottomGradientStartColor">#00000000</Color>
+                <!-- 底部渐变终点颜色加深，更契合深色主题 -->
+                <Color x:Key="BottomGradientEndColor">#E6000000</Color>
+            </ResourceDictionary>
+        </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+</UserControl.Resources>
+
+<Design.DataContext>
+    <views:PreviewCardViewModel/>
+</Design.DataContext>
+
+<Border
+    Background="Transparent"
+    Width="390" Height="600" CornerRadius="12" ClipToBounds="True" Margin="0">
+    <Grid >
+        <Border ClipToBounds="False" CornerRadius="12">
+            <Border.Effect>
+                <BlurEffect Radius="{Binding CoverBlurRadius}" />
+            </Border.Effect>
+            <Image
+                Source="{Binding Cover}"
+                Stretch="UniformToFill" />
+        </Border>
+
+        <!-- 封面暗化遮罩，会自动根据深浅色模式切换 -->
+        <Border Background="{DynamicResource CoverDimBrush}" />
+
+        <!-- 左上角JM号，使用了新的TagBackgroundBrush和TagTextBrush -->
+        <Border VerticalAlignment="Top" HorizontalAlignment="Left" Background="{DynamicResource TagBackgroundBrush}" CornerRadius="4" Margin="10" Padding="6,3">
+            <TextBlock Text="{Binding AlbumId}" Foreground="{DynamicResource TagTextBrush}" FontSize="12"/>
+        </Border>
+
+        <Grid VerticalAlignment="Bottom" Height="122">
+            <Border>
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
+                        <GradientStop Color="{DynamicResource BottomGradientStartColor}" Offset="0"/>
+                        <GradientStop Color="{DynamicResource BottomGradientEndColor}" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+            </Border>
+
+            <Grid ColumnDefinitions="*,Auto" Margin="10,0,10,10" VerticalAlignment="Bottom">
+                <StackPanel Grid.Column="0" VerticalAlignment="Bottom" Margin="0,0,12,0">
+                    <TextBlock Text="{Binding Title}" Foreground="{DynamicResource PrimaryTextBrush}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap" MaxLines="2"/>
+                    <TextBlock Text="{Binding PageText}" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11" Margin="0,4,0,0"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Bottom"
+                            Spacing="8">
+                    <StackPanel Orientation="Horizontal">
+                        <PathIcon Data="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"
+                                  Width="12" Height="12" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                        <TextBlock Text="{Binding ViewCount}" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <PathIcon Data="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+                                  Width="12" Height="12" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                        <TextBlock Text="{Binding LikeCount}" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="11" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Grid>
+    </Grid>
+</Border>
+</UserControl>

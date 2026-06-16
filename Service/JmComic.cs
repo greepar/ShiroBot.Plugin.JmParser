@@ -8,6 +8,7 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
+using ShiroBot.SDK.Abstractions;
 
 namespace ShiroBot.JmParser.Service;
 
@@ -54,13 +55,6 @@ internal static class OutputModeParser
 
 internal sealed class JmPdfBuilder(JmComicDownloader downloader, string dataDir)
 {
-    public async Task<string> FetchAlbumTitleAsync(string albumId)
-    {
-        var (html, _) = await downloader.GetAlbumHtmlAsync(albumId).ConfigureAwait(false);
-        var album = JmHtmlParser.ParseAlbum(html, albumId);
-        return album.Title;
-    }
-
     public async Task<PdfBuildResult> BuildAsync(string albumId)
     {
         var workDir = Path.Combine(dataDir, albumId);
@@ -68,7 +62,17 @@ internal sealed class JmPdfBuilder(JmComicDownloader downloader, string dataDir)
 
         if (File.Exists(pdfPath))
         {
-            return new PdfBuildResult(pdfPath, Path.GetFileName(pdfPath));
+            var pages = FindDownloadedPages(workDir);
+            try
+            {
+                var (html, _) = await downloader.GetAlbumHtmlAsync(albumId).ConfigureAwait(false);
+                var cachedAlbum = JmHtmlParser.ParseAlbum(html, albumId);
+                return CreateBuildResult(pdfPath, cachedAlbum, pages);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.StartsWith("所有 JM 网页域名都请求失败", StringComparison.Ordinal))
+            {
+                return CreateBuildResult(pdfPath, new AlbumDetail(albumId, "220980", $"JM{albumId}", null, null, []), pages);
+            }
         }
 
         var pageDir = Path.Combine(workDir, "pages");
@@ -83,7 +87,46 @@ internal sealed class JmPdfBuilder(JmComicDownloader downloader, string dataDir)
         await SimplePdfWriter.WriteAsync(album.Pages, pdfPath).ConfigureAwait(false);
         Directory.SetLastWriteTimeUtc(workDir, DateTime.UtcNow);
 
-        return new PdfBuildResult(pdfPath, Path.GetFileName(pdfPath));
+        return CreateBuildResult(pdfPath, album, album.Pages);
+    }
+
+    private static PdfBuildResult CreateBuildResult(string pdfPath, JmDownloadedAlbum album, IReadOnlyList<PdfImagePage> pages)
+    {
+        return new PdfBuildResult(
+            pdfPath,
+            Path.GetFileName(pdfPath),
+            pages.FirstOrDefault()?.Path,
+            album.Title,
+            pages.Count,
+            album.ViewCount,
+            album.LikeCount);
+    }
+
+    private static PdfBuildResult CreateBuildResult(string pdfPath, AlbumDetail album, IReadOnlyList<PdfImagePage> pages)
+    {
+        return new PdfBuildResult(
+            pdfPath,
+            Path.GetFileName(pdfPath),
+            pages.FirstOrDefault()?.Path,
+            album.Title,
+            pages.Count,
+            album.ViewCount,
+            album.LikeCount);
+    }
+
+    private static IReadOnlyList<PdfImagePage> FindDownloadedPages(string workDir)
+    {
+        var pageDir = Path.Combine(workDir, "pages");
+        if (!Directory.Exists(pageDir)) return [];
+
+        return Directory.EnumerateFiles(pageDir, "*.jpg")
+            .Order(StringComparer.Ordinal)
+            .Select(path =>
+            {
+                var info = ImageInfo.Read(path);
+                return new PdfImagePage(path, info.Width, info.Height);
+            })
+            .ToArray();
     }
 }
 
@@ -114,6 +157,14 @@ internal static class JmRetentionCleaner
 internal sealed class JmComicDownloader : IDisposable
 {
     private static readonly Regex DomainPattern = new(@"[\w-]+\.\w+(?:/[\w-]+)?", RegexOptions.Compiled);
+    private static readonly string[] CdnImageDomains = ["cdn-msp.18comic.vip", "cdn-msp2.18comic.vip", "cdn-msp3.18comic.vip"];
+    private static readonly string[] CdnImageSuffixes = [".webp", ".jpg", ".png", ".gif"];
+    private const string DefaultScrambleId = "220980";
+    private const int MaxCdnProbePages = 500;
+    private const int MaxCdnConsecutiveMisses = 5;
+    private const int CdnProbeBatchSize = 32;
+    private const int HtmlDomainTimeoutSeconds = 12;
+    private static readonly bool UseCdnDirectFirst = true;
 
     private readonly HttpClient _http;
     private readonly int _maxConcurrency;
@@ -154,15 +205,30 @@ internal sealed class JmComicDownloader : IDisposable
 
     public async Task<JmDownloadedAlbum> DownloadAlbumAsync(string albumId, string pageDir)
     {
-        var albumPage = await GetHtmlAsync($"/album/{albumId}").ConfigureAwait(false);
-        var album = JmHtmlParser.ParseAlbum(albumPage.Html, albumId);
+        if (UseCdnDirectFirst)
+        {
+            return await DownloadCdnAlbumAsync(albumId, pageDir).ConfigureAwait(false);
+        }
 
-        // 第一步：并发获取所有章节的 photo 页面
-        var chapterPhotoTasks = album.Chapters
-            .Select(chapter => FetchPhotoAsync(chapter, album.ScrambleId))
-            .ToArray();
+        AlbumDetail album;
+        (ChapterDetail Chapter, PhotoDetail Photo, string PageUrl)[] chapterPhotos;
+        try
+        {
+            var albumPage = await GetHtmlAsync($"/album/{albumId}").ConfigureAwait(false);
+            album = JmHtmlParser.ParseAlbum(albumPage.Html, albumId);
 
-        var chapterPhotos = await Task.WhenAll(chapterPhotoTasks).ConfigureAwait(false);
+            // 第一步：并发获取所有章节的 photo 页面
+            var chapterPhotoTasks = album.Chapters
+                .Select(chapter => FetchPhotoAsync(chapter, album.ScrambleId))
+                .ToArray();
+
+            chapterPhotos = await Task.WhenAll(chapterPhotoTasks).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex) when (ex.Message.StartsWith("所有 JM 网页域名都请求失败", StringComparison.Ordinal))
+        {
+            BotLog.Info($"[JmParser] JM{albumId} 网页端不可用，开始使用 CDN 直连探测。");
+            return await DownloadCdnAlbumAsync(albumId, pageDir).ConfigureAwait(false);
+        }
 
         // 第二步：并发下载所有图片，按顺序组装
         var pending = new List<(int ChapterIndex, int PageIndex, string SavePath, string Url, string Referer, string ScrambleId, string PhotoId, string ImageName)>();
@@ -183,6 +249,7 @@ internal sealed class JmComicDownloader : IDisposable
         }
 
         // 并发下载
+        BotLog.Info($"[JmParser] JM{albumId} 已解析 {chapterPhotos.Sum(item => item.Photo.ImageUrls.Count)} 张图片，待下载 {pending.Count} 张。");
         var semaphore = new SemaphoreSlim(_maxConcurrency);
         var downloadTasks = pending.Select(async item =>
         {
@@ -200,6 +267,7 @@ internal sealed class JmComicDownloader : IDisposable
         });
 
         await Task.WhenAll(downloadTasks).ConfigureAwait(false);
+        BotLog.Info($"[JmParser] JM{albumId} 图片下载完成，开始生成 PDF。");
 
         // 读取所有 page 尺寸，保持原始章节顺序
         var pages = new List<PdfImagePage>();
@@ -213,7 +281,7 @@ internal sealed class JmComicDownloader : IDisposable
             }
         }
 
-        return new JmDownloadedAlbum(album.AlbumId, album.Title, pages);
+        return new JmDownloadedAlbum(album.AlbumId, album.Title, album.ViewCount, album.LikeCount, pages);
     }
 
     private async Task<(ChapterDetail Chapter, PhotoDetail Photo, string PageUrl)> FetchPhotoAsync(ChapterDetail chapter, string albumScrambleId)
@@ -222,6 +290,108 @@ internal sealed class JmComicDownloader : IDisposable
         var photo = JmHtmlParser.ParsePhoto(photoPage.Html, chapter, albumScrambleId, photoPage.Url);
         return (chapter, photo, photoPage.Url);
     }
+
+    private async Task<JmDownloadedAlbum> DownloadCdnAlbumAsync(string albumId, string pageDir)
+    {
+        Directory.CreateDirectory(pageDir);
+        string? cdnDomain = null;
+        string? suffix = null;
+        var firstSaved = false;
+
+        foreach (var domain in CdnImageDomains)
+        {
+            foreach (var candidateSuffix in CdnImageSuffixes)
+            {
+                var url = BuildCdnImageUrl(albumId, 1, domain, candidateSuffix);
+                var savePath = Path.Combine(pageDir, "001-00001.jpg");
+                if (!await TryDownloadAndSaveImageAsync(url, "https://18comic.vip/", albumId, savePath).ConfigureAwait(false)) continue;
+
+                cdnDomain = domain;
+                suffix = candidateSuffix;
+                firstSaved = true;
+                break;
+            }
+
+            if (firstSaved) break;
+        }
+
+        if (!firstSaved || cdnDomain is null || suffix is null)
+        {
+            throw new InvalidOperationException($"网页端无法访问，且 CDN 未找到 JM{albumId} 的第 1 张图片。");
+        }
+
+        var saved = new SortedSet<int> { 1 };
+        for (var start = 2; start <= MaxCdnProbePages; start += CdnProbeBatchSize)
+        {
+            var end = Math.Min(start + CdnProbeBatchSize - 1, MaxCdnProbePages);
+            var results = await Task.WhenAll(Enumerable.Range(start, end - start + 1).Select(async index =>
+            {
+                var url = BuildCdnImageUrl(albumId, index, cdnDomain, suffix);
+                var savePath = Path.Combine(pageDir, $"001-{index:00000}.jpg");
+                var ok = File.Exists(savePath) || await TryDownloadAndSaveImageAsync(url, "https://18comic.vip/", albumId, savePath).ConfigureAwait(false);
+                return (Index: index, Ok: ok);
+            }))
+                .ConfigureAwait(false);
+
+            foreach (var (index, ok) in results)
+            {
+                if (ok) saved.Add(index);
+            }
+
+            var consecutiveMisses = 0;
+            for (var index = 1; index <= end; index++)
+            {
+                if (saved.Contains(index)) consecutiveMisses = 0;
+                else consecutiveMisses++;
+
+                if (consecutiveMisses >= MaxCdnConsecutiveMisses)
+                {
+                    return CreateCdnAlbumResult(albumId, pageDir, saved.Where(page => page < index - MaxCdnConsecutiveMisses + 1));
+                }
+            }
+
+            BotLog.Info($"[JmParser] JM{albumId} CDN 已下载 {saved.Count} 张图片，当前进度 {end}/{MaxCdnProbePages}。");
+        }
+
+        return CreateCdnAlbumResult(albumId, pageDir, saved);
+    }
+
+    private static JmDownloadedAlbum CreateCdnAlbumResult(string albumId, string pageDir, IEnumerable<int> savedPages)
+    {
+        var pages = savedPages
+            .Distinct()
+            .Order()
+            .Select(index => Path.Combine(pageDir, $"001-{index:00000}.jpg"))
+            .Where(File.Exists)
+            .Select(path =>
+            {
+                var info = ImageInfo.Read(path);
+                return new PdfImagePage(path, info.Width, info.Height);
+            })
+            .ToArray();
+
+        BotLog.Info($"[JmParser] JM{albumId} CDN 下载完成，共 {pages.Length} 张图片。");
+        return new JmDownloadedAlbum(albumId, $"JM{albumId}", null, null, pages);
+    }
+
+    private async Task<bool> TryDownloadAndSaveImageAsync(string url, string referer, string photoId, string savePath)
+    {
+        try
+        {
+            var bytes = await GetBytesAsync(url, referer).ConfigureAwait(false);
+            var imageName = Path.GetFileNameWithoutExtension(new Uri(url).AbsolutePath);
+            var num = JmImageDecoder.CalculateScrambleNum(DefaultScrambleId, photoId, imageName);
+            JmImageDecoder.DecodeAndSaveJpeg(bytes, num, savePath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string BuildCdnImageUrl(string photoId, int index, string domain, string suffix) =>
+        $"https://{domain}/media/photos/{photoId}/{index:00000}{suffix}";
 
     public void Dispose() => _http.Dispose();
 
@@ -233,54 +403,92 @@ internal sealed class JmComicDownloader : IDisposable
     private async Task<(string Html, string Url)> GetHtmlAsync(string path)
     {
         var errors = new List<string>();
-        foreach (var domain in await GetDomainsAsync().ConfigureAwait(false))
+        using var cts = new CancellationTokenSource();
+        var tasks = (await GetDomainsAsync().ConfigureAwait(false))
+            .Select(domain => TryGetHtmlFromDomainAsync(domain, path, cts.Token))
+            .ToList();
+
+        while (tasks.Count > 0)
         {
-            var url = $"https://{domain.TrimEnd('/')}{path}";
-            try
+            var finished = await Task.WhenAny(tasks).ConfigureAwait(false);
+            tasks.Remove(finished);
+            var result = await finished.ConfigureAwait(false);
+            if (result.Success)
             {
-                using var req = new HttpRequestMessage(HttpMethod.Get, url);
-                req.Headers.Referrer = new Uri("https://18comic.vip/");
-                req.Headers.Accept.ParseAdd("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-                using var resp = await _http.SendAsync(req).ConfigureAwait(false);
-                var finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? url;
-
-                var finalHost = new Uri(finalUrl).Host;
-                if (BlockedHosts.Contains(finalHost))
-                {
-                    errors.Add($"{domain} → {finalHost}: 重定向到非 JM 站点，跳过");
-                    continue;
-                }
-
-                var text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-                if (!resp.IsSuccessStatusCode)
-                {
-                    errors.Add($"{domain}: {(int)resp.StatusCode}");
-                    continue;
-                }
-
-                if (text.Contains("Restricted Access!", StringComparison.OrdinalIgnoreCase))
-                {
-                    errors.Add($"{domain}: Restricted Access");
-                    continue;
-                }
-
-                var decoded = JmHtmlParser.DecodeBase64Html(text);
-
-                if (!IsJmHtml(decoded))
-                {
-                    errors.Add($"{domain}: 响应内容不包含 JM 特征标记（scramble_id/page_arr），跳过");
-                    continue;
-                }
-
-                return (decoded, finalUrl);
+                cts.Cancel();
+                return (result.Html, result.Url);
             }
-            catch (Exception ex)
-            {
-                errors.Add($"{domain}: {ex.Message}");
-            }
+
+            errors.Add(result.Error);
         }
 
         throw new InvalidOperationException("所有 JM 网页域名都请求失败: " + string.Join("; ", errors));
+    }
+
+    private async Task<HtmlFetchResult> TryGetHtmlFromDomainAsync(string domain, string path, CancellationToken cancellationToken)
+    {
+        var url = $"https://{domain.TrimEnd('/')}{path}";
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(HtmlDomainTimeoutSeconds));
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            AddHtmlHeaders(req, domain);
+            using var resp = await _http.SendAsync(req, timeoutCts.Token).ConfigureAwait(false);
+            var finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? url;
+
+            var finalHost = new Uri(finalUrl).Host;
+            if (BlockedHosts.Contains(finalHost))
+            {
+                return HtmlFetchResult.Fail($"{domain} → {finalHost}: 重定向到非 JM 站点，跳过");
+            }
+
+            var text = await resp.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return HtmlFetchResult.Fail($"{domain}: {(int)resp.StatusCode}");
+            }
+
+            if (text.Contains("Restricted Access!", StringComparison.OrdinalIgnoreCase))
+            {
+                return HtmlFetchResult.Fail($"{domain}: Restricted Access");
+            }
+
+            var decoded = JmHtmlParser.DecodeBase64Html(text);
+            if (IsJmErrorPage(finalUrl, decoded))
+            {
+                return HtmlFetchResult.Fail($"{domain}: JM 错误页 {finalUrl}");
+            }
+
+            if (!IsJmHtml(decoded))
+            {
+                return HtmlFetchResult.Fail($"{domain}: 响应内容不包含 JM 特征标记（scramble_id/page_arr），跳过");
+            }
+
+            return HtmlFetchResult.Ok(decoded, finalUrl);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return HtmlFetchResult.Fail($"{domain}: timeout");
+        }
+        catch (Exception ex)
+        {
+            return HtmlFetchResult.Fail($"{domain}: {ex.Message}");
+        }
+    }
+
+    private static bool IsJmErrorPage(string finalUrl, string html)
+    {
+        if (Uri.TryCreate(finalUrl, UriKind.Absolute, out var uri) &&
+            uri.AbsolutePath.StartsWith("/error/", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return html.Contains("album_missing", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("本子不存在", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("漫畫不存在", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("漫画不存在", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsJmHtml(string html)
@@ -328,6 +536,7 @@ internal sealed class JmComicDownloader : IDisposable
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Referrer = new Uri(referer);
         req.Headers.Accept.ParseAdd("image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8");
+        req.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7");
 
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, downloadCts.Token).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
@@ -413,15 +622,39 @@ internal sealed class JmComicDownloader : IDisposable
 
     private sealed class SlowDownloadException(string message) : Exception(message);
 
+    private static void AddHtmlHeaders(HttpRequestMessage request, string domain)
+    {
+        var host = domain.TrimEnd('/');
+        request.Headers.Host = host;
+        request.Headers.Referrer = new Uri($"https://{host}/");
+        request.Headers.Accept.ParseAdd("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
+        request.Headers.TryAddWithoutValidation("Accept-Language", "zh-CN,zh;q=0.9");
+        request.Headers.TryAddWithoutValidation("Cache-Control", "no-cache");
+        request.Headers.TryAddWithoutValidation("DNT", "1");
+        request.Headers.TryAddWithoutValidation("Pragma", "no-cache");
+        request.Headers.TryAddWithoutValidation("Priority", "u=0, i");
+        request.Headers.TryAddWithoutValidation("Sec-CH-UA", "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"");
+        request.Headers.TryAddWithoutValidation("Sec-CH-UA-Mobile", "?0");
+        request.Headers.TryAddWithoutValidation("Sec-CH-UA-Platform", "\"Windows\"");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "document");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "navigate");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "none");
+        request.Headers.TryAddWithoutValidation("Sec-Fetch-User", "?1");
+        request.Headers.TryAddWithoutValidation("Upgrade-Insecure-Requests", "1");
+    }
+
     private async Task<IReadOnlyList<string>> GetDomainsAsync()
     {
         if (_domains is not null) return _domains;
 
         var domains = new List<string>();
+        AddDomain(domains, "18comic.vip");
+        AddDomain(domains, "jmcomic1.me");
+        AddDomain(domains, "jmcomic.me");
+
         await TryAddRedirectDomainAsync(domains).ConfigureAwait(false);
         await TryAddPublishPageDomainsAsync(domains).ConfigureAwait(false);
 
-        AddDomain(domains, "18comic.vip");
         AddDomain(domains, "18comic.org");
         AddDomain(domains, "jmcomicgo.org");
 
@@ -482,12 +715,14 @@ internal static class JmHtmlParser
     private static readonly Regex Base64HtmlPattern = new("const html = base64DecodeUtf8\\(\"(?<html>.*?)\"\\)", RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex AlbumIdPattern = new("<span class=\"number\">.*?：JM(?<id>\\d+)</span>", RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex AlbumTitlePattern = new("id=\"book-name\"[^>]*?>(?<title>[\\s\\S]*?)<", RegexOptions.Compiled);
+    private static readonly Regex ViewCountPattern = new("(?:總觀看|总观看|觀看|观看|瀏覽|浏览)[^0-9]*?(?<count>[0-9][0-9,\\.]*(?:\\s*[KkMm]|\\s*[萬万])?)", RegexOptions.Compiled);
+    private static readonly Regex LikeCountPattern = new("(?:喜歡|喜欢|愛心|爱心|讚|赞)[^0-9]*?(?<count>[0-9][0-9,\\.]*(?:\\s*[KkMm]|\\s*[萬万])?)", RegexOptions.Compiled);
     private static readonly Regex EpisodePattern = new("data-album=\"(?<id>\\d+)\"[^>]*>[\\s\\S]*?第(?<index>\\d+)[话話](?<title>[\\s\\S]*?)<", RegexOptions.Compiled);
     private static readonly Regex PhotoIdPattern = new("<meta property=\"og:url\" content=\".*?/photo/(?<id>\\d+)/?.*?\">", RegexOptions.Compiled);
     private static readonly Regex ScramblePattern = new("var scramble_id = (?<id>\\d+);", RegexOptions.Compiled);
     private static readonly Regex PageArrayPattern = new("var page_arr = (?<json>.*?);", RegexOptions.Singleline | RegexOptions.Compiled);
-    private static readonly Regex ImageDomainPattern = new("src=\"https://(?<domain>.*?)/media/albums/blank", RegexOptions.Compiled);
-    private static readonly Regex FirstOriginalPattern = new("data-original=\"(?<url>.*?)\"[^>]*?id=\"album_photo[^>]*?data-page=\"0\"", RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex ImageDomainPattern = new("(?:src|data-original)=\"(?:https?:)?//(?<domain>.*?)/media/", RegexOptions.Compiled);
+    private static readonly Regex FirstOriginalPattern = new("data-original=\"(?<url>(?:https?:)?//[^\"]+/media/photos/[^\"]+|/media/photos/[^\"]+)\"", RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex OriginalPattern = new("data-original=\"(?<url>.*?)\"", RegexOptions.Compiled);
 
     public static AlbumDetail ParseAlbum(string html, string fallbackId)
@@ -495,6 +730,8 @@ internal static class JmHtmlParser
         var albumId = MatchOrDefault(AlbumIdPattern, html, "id") ?? fallbackId;
         var scrambleId = MatchOrDefault(ScramblePattern, html, "id") ?? "220980";
         var title = CleanHtml(MatchOrDefault(AlbumTitlePattern, html, "title") ?? $"JM{albumId}");
+        var viewCount = NormalizeCount(MatchOrDefault(ViewCountPattern, html, "count"));
+        var likeCount = NormalizeCount(MatchOrDefault(LikeCountPattern, html, "count"));
         var chapters = new List<ChapterDetail>();
 
         foreach (Match match in EpisodePattern.Matches(html))
@@ -508,7 +745,7 @@ internal static class JmHtmlParser
         if (chapters.Count == 0) chapters.Add(new ChapterDetail(albumId, 1, title));
 
         chapters.Sort((x, y) => x.Index.CompareTo(y.Index));
-        return new AlbumDetail(albumId, scrambleId, title, chapters);
+        return new AlbumDetail(albumId, scrambleId, title, viewCount, likeCount, chapters);
     }
 
     public static PhotoDetail ParsePhoto(string html, ChapterDetail chapter, string albumScrambleId, string pageUrl)
@@ -516,14 +753,15 @@ internal static class JmHtmlParser
         var photoId = MatchOrDefault(PhotoIdPattern, html, "id") ?? chapter.PhotoId;
         var scrambleId = MatchOrDefault(ScramblePattern, html, "id") ?? albumScrambleId;
         var firstOriginal = WebUtility.HtmlDecode(MatchOrDefault(FirstOriginalPattern, html, "url") ?? string.Empty);
-        var imageUrls = ParseImageUrlsFromPageArray(html, photoId, firstOriginal);
+        var imageUrls = ParseImageUrlsFromPageArray(html, photoId, firstOriginal, pageUrl);
 
         if (imageUrls.Count == 0)
         {
             foreach (Match match in OriginalPattern.Matches(html))
             {
                 var url = WebUtility.HtmlDecode(match.Groups["url"].Value);
-                if (!string.IsNullOrWhiteSpace(url) && imageUrls.Contains(url) == false) imageUrls.Add(url);
+                url = NormalizeImageUrl(url, pageUrl);
+                if (IsPhotoImageUrl(url) && imageUrls.Contains(url) == false) imageUrls.Add(url);
             }
         }
 
@@ -541,7 +779,7 @@ internal static class JmHtmlParser
         return Encoding.UTF8.GetString(bytes);
     }
 
-    private static List<string> ParseImageUrlsFromPageArray(string html, string photoId, string firstOriginal)
+    private static List<string> ParseImageUrlsFromPageArray(string html, string photoId, string firstOriginal, string pageUrl)
     {
         var imageUrls = new List<string>();
         var arrayJson = MatchOrDefault(PageArrayPattern, html, "json");
@@ -550,9 +788,11 @@ internal static class JmHtmlParser
         var pageArr = JsonSerializer.Deserialize<List<string>>(arrayJson) ?? [];
         var domain = MatchOrDefault(ImageDomainPattern, html, "domain");
         if (string.IsNullOrWhiteSpace(domain) && Uri.TryCreate(firstOriginal, UriKind.Absolute, out var firstUri)) domain = firstUri.Host;
+        if (string.IsNullOrWhiteSpace(domain) && Uri.TryCreate(pageUrl, UriKind.Absolute, out var pageUri)) domain = pageUri.Host;
         if (string.IsNullOrWhiteSpace(domain)) return imageUrls;
 
         var query = ExtractQuery(firstOriginal);
+        if (query.Length == 0) query = $"v={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
         foreach (var imgName in pageArr)
         {
             var url = $"https://{domain}/media/photos/{photoId}/{imgName}";
@@ -561,6 +801,22 @@ internal static class JmHtmlParser
         }
 
         return imageUrls;
+    }
+
+    private static string NormalizeImageUrl(string url, string pageUrl)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return string.Empty;
+        url = url.Trim();
+        if (url.StartsWith("//", StringComparison.Ordinal)) return "https:" + url;
+        if (Uri.TryCreate(url, UriKind.Absolute, out _)) return url;
+        if (Uri.TryCreate(pageUrl, UriKind.Absolute, out var baseUri) && Uri.TryCreate(baseUri, url, out var absoluteUri)) return absoluteUri.ToString();
+        return url;
+    }
+
+    private static bool IsPhotoImageUrl(string url)
+    {
+        return Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+               uri.AbsolutePath.Contains("/media/photos/", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ExtractQuery(string url)
@@ -582,6 +838,12 @@ internal static class JmHtmlParser
         value = Regex.Replace(value, "<.*?>", string.Empty, RegexOptions.Singleline);
         value = WebUtility.HtmlDecode(value);
         return Regex.Replace(value, "\\s+", " ").Trim();
+    }
+
+    private static string? NormalizeCount(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return value.Replace(" ", string.Empty).Trim();
     }
 }
 
@@ -655,17 +917,31 @@ internal static class FileNameCleaner
     }
 }
 
-internal sealed record AlbumDetail(string AlbumId, string ScrambleId, string Title, List<ChapterDetail> Chapters);
+internal sealed record AlbumDetail(string AlbumId, string ScrambleId, string Title, string? ViewCount, string? LikeCount, List<ChapterDetail> Chapters);
 
 internal sealed record ChapterDetail(string PhotoId, int Index, string Title);
 
 internal sealed record PhotoDetail(string PhotoId, string ScrambleId, List<string> ImageUrls);
 
-internal sealed record JmDownloadedAlbum(string AlbumId, string Title, IReadOnlyList<PdfImagePage> Pages);
+internal sealed record HtmlFetchResult(bool Success, string Html, string Url, string Error)
+{
+    public static HtmlFetchResult Ok(string html, string url) => new(true, html, url, string.Empty);
+
+    public static HtmlFetchResult Fail(string error) => new(false, string.Empty, string.Empty, error);
+}
+
+internal sealed record JmDownloadedAlbum(string AlbumId, string Title, string? ViewCount, string? LikeCount, IReadOnlyList<PdfImagePage> Pages);
 
 internal sealed record PdfImagePage(string Path, uint Width, uint Height);
 
-internal sealed record PdfBuildResult(string PdfPath, string FileName)
+internal sealed record PdfBuildResult(
+    string PdfPath,
+    string FileName,
+    string? CoverPath,
+    string Title,
+    int PageCount,
+    string? ViewCount,
+    string? LikeCount)
 {
     public string? PreviewUrl { get; init; }
 }

@@ -10,25 +10,59 @@
         <RootNamespace>ShiroBot.JmParser</RootNamespace>
     </PropertyGroup>
 
+    <!-- 让 partial class 在 IDE 中折叠到 .axaml 之下，仅影响 Solution Explorer 显示 -->
     <ItemGroup>
+        <Compile Update="Views\PreviewCard.axaml.cs">
+            <DependentUpon>PreviewCard.axaml</DependentUpon>
+        </Compile>
+    </ItemGroup>
 
+    <ItemGroup>
+        <PackageReference Include="Avalonia" Version="12.0.4">
+            <ExcludeAssets>runtime</ExcludeAssets>
+            <PrivateAssets>none</PrivateAssets>
+            <IncludeAssets>compile; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
         <PackageReference Include="PDFsharp" Version="6.2.4" />
-        <PackageReference Include="ShiroBot.SDK" Version="0.3.0" />
+        <PackageReference Include="ShiroBot.SDK" Version="0.5.0" />
+        <PackageReference Include="ShiroBot.AvaloniaSdk" Version="0.5.0" />
         <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
         <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.44.1">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
     </ItemGroup>
+
+    <ItemGroup>
+      <Compile Update="Views\Views\DescriptionCard.axaml.cs">
+        <DependentUpon>DescriptionCard.axaml</DependentUpon>
+        <SubType>Code</SubType>
+      </Compile>
+      <Compile Update="Views\PreviewCard.axaml.cs">
+        <SubType>Code</SubType>
+      </Compile>
+      <None Update="Assets\**\*">
+        <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+        <CopyToPublishDirectory>Never</CopyToPublishDirectory>
+      </None>
+    </ItemGroup>
     <Target Name="RepackPlugin" AfterTargets="Publish" Condition="'$(Configuration)'=='Release'">
         <PropertyGroup>
             <MergedPluginFile>$(PublishDir)$(AssemblyName).merged.dll</MergedPluginFile>
+            <MergedPluginPdb>$(PublishDir)$(AssemblyName).merged.pdb</MergedPluginPdb>
+            <PublishedPluginFile>$(PublishDir)$(AssemblyName).dll</PublishedPluginFile>
+            <PublishedPluginPdb>$(PublishDir)$(AssemblyName).pdb</PublishedPluginPdb>
         </PropertyGroup>
 
+        <Delete Files="$(MergedPluginFile);$(MergedPluginPdb)" />
+        <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(PublishedPluginFile)" OverwriteReadOnlyFiles="true" />
+        <Copy SourceFiles="$(TargetDir)$(AssemblyName).pdb" DestinationFiles="$(PublishedPluginPdb)" OverwriteReadOnlyFiles="true" Condition="Exists('$(TargetDir)$(AssemblyName).pdb')" />
+
         <ItemGroup>
-            <RepackInput Include="$(PublishDir)$(AssemblyName).dll" />
+            <RepackInput Include="$(PublishedPluginFile)" />
             <RepackDependency Include="$(PublishDir)*.dll"
-                              Exclude="$(PublishDir)$(AssemblyName).dll;
+                              Exclude="$(PublishedPluginFile);
+                                       $(MergedPluginFile);
                                        $(PublishDir)ShiroBot.SDK.dll;
                                        $(PublishDir)ShiroBot.Model.dll;
                                        $(PublishDir)System*.dll;
@@ -41,13 +75,15 @@
                 TargetKind="Dll"
                 OutputFile="$(MergedPluginFile)"
                 InputAssemblies="@(RepackInput)"
-                LibraryPath="$(PublishDir)"
-                Internalize="true"
+                LibraryPath="$(PublishDir);$(TargetDir);@(ReferencePath->'%(RootDir)%(Directory)')"
+                Internalize="false"
                 Parallel="true"
                 DebugInfo="true" />
 
         <Copy SourceFiles="$(MergedPluginFile)" DestinationFiles="$(PublishDir)$(AssemblyName).dll" OverwriteReadOnlyFiles="true" />
+        <Copy SourceFiles="$(MergedPluginPdb)" DestinationFiles="$(PublishedPluginPdb)" OverwriteReadOnlyFiles="true" Condition="Exists('$(MergedPluginPdb)')" />
         <Delete Files="$(MergedPluginFile)" />
+        <Delete Files="$(MergedPluginPdb)" />
         <Delete Files="@(RepackDependency)" />
     </Target>
 
