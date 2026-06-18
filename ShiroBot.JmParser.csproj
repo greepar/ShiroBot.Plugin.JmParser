@@ -46,6 +46,7 @@
         <CopyToPublishDirectory>Never</CopyToPublishDirectory>
       </None>
     </ItemGroup>
+    
     <Target Name="RepackPlugin" AfterTargets="Publish" Condition="'$(Configuration)'=='Release'">
         <PropertyGroup>
             <MergedPluginFile>$(PublishDir)$(AssemblyName).merged.dll</MergedPluginFile>

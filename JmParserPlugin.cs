@@ -10,8 +10,10 @@ using ShiroBot.SDK.Plugin;
 namespace ShiroBot.JmParser;
 
 [BotPlugin(id:"JmParser",
-    Description = "JM PDF下载插件",
-    Version = "1.0.0",
+    Description = "JM 解析插件",
+    Version = "1.1.0",
+    Author = "greepar",
+    Category = PluginCategory.Media,
     GithubRepo = "greepar/ShiroBot.Plugin.JmParser",
     IsPluginSingleFile = false)]
 public sealed class JmParserPlugin : PluginBase
