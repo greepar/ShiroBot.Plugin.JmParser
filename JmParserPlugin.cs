@@ -167,7 +167,7 @@ public sealed class JmParserPlugin : PluginBase
 
     private async Task<ImageOutgoingSegment?> RenderPreviewAsync(PdfBuildResult result)
     {
-        if (Context.Render is null || string.IsNullOrWhiteSpace(result.CoverPath) || !File.Exists(result.CoverPath))
+        if (Context.Render is null || string.IsNullOrWhiteSpace(result.CoverPath) )
         {
             return null;
         }

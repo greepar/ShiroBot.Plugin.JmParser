@@ -294,6 +294,7 @@ internal sealed class JmComicDownloader : IDisposable
     private async Task<JmDownloadedAlbum> DownloadCdnAlbumAsync(string albumId, string pageDir)
     {
         Directory.CreateDirectory(pageDir);
+        var albumDetailTask = TryGetAlbumDetailAsync(albumId);
         string? cdnDomain = null;
         string? suffix = null;
         var firstSaved = false;
@@ -346,17 +347,31 @@ internal sealed class JmComicDownloader : IDisposable
 
                 if (consecutiveMisses >= MaxCdnConsecutiveMisses)
                 {
-                    return CreateCdnAlbumResult(albumId, pageDir, saved.Where(page => page < index - MaxCdnConsecutiveMisses + 1));
+                    return CreateCdnAlbumResult(albumId, await albumDetailTask.ConfigureAwait(false), pageDir, saved.Where(page => page < index - MaxCdnConsecutiveMisses + 1));
                 }
             }
 
             BotLog.Info($"[JmParser] JM{albumId} CDN 已下载 {saved.Count} 张图片，当前进度 {end}/{MaxCdnProbePages}。");
         }
 
-        return CreateCdnAlbumResult(albumId, pageDir, saved);
+        return CreateCdnAlbumResult(albumId, await albumDetailTask.ConfigureAwait(false), pageDir, saved);
     }
 
-    private static JmDownloadedAlbum CreateCdnAlbumResult(string albumId, string pageDir, IEnumerable<int> savedPages)
+    private async Task<AlbumDetail?> TryGetAlbumDetailAsync(string albumId)
+    {
+        try
+        {
+            var (html, _) = await GetAlbumHtmlAsync(albumId).ConfigureAwait(false);
+            return JmHtmlParser.ParseAlbum(html, albumId);
+        }
+        catch (Exception ex)
+        {
+            BotLog.Info($"[JmParser] JM{albumId} 元信息获取失败，预览卡片将使用默认标题: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static JmDownloadedAlbum CreateCdnAlbumResult(string albumId, AlbumDetail? albumDetail, string pageDir, IEnumerable<int> savedPages)
     {
         var pages = savedPages
             .Distinct()
@@ -371,7 +386,12 @@ internal sealed class JmComicDownloader : IDisposable
             .ToArray();
 
         BotLog.Info($"[JmParser] JM{albumId} CDN 下载完成，共 {pages.Length} 张图片。");
-        return new JmDownloadedAlbum(albumId, $"JM{albumId}", null, null, pages);
+        return new JmDownloadedAlbum(
+            albumId,
+            albumDetail?.Title ?? $"JM{albumId}",
+            albumDetail?.ViewCount,
+            albumDetail?.LikeCount,
+            pages);
     }
 
     private async Task<bool> TryDownloadAndSaveImageAsync(string url, string referer, string photoId, string savePath)
