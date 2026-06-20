@@ -19,6 +19,13 @@ public sealed class PluginConfig
     public string OutputMode { get; set; } = "file";
 
     /// <summary>
+    /// Optional public base URL used when sending preview links, for example: https://jm.example.com:500
+    /// Leave empty to use the host generated URL.
+    /// </summary>
+    [ConfigField("发送临时预览链接时使用的公网域名或 URL 前缀，留空使用宿主生成的地址。", Label = "公网预览地址", Type = "string", Placeholder = "https://jm.example.com:500")]
+    public string PublicBaseUrl { get; set; } = string.Empty;
+
+    /// <summary>
     /// Minutes to keep generated PDFs and downloaded images. Set 0 or less to disable cleanup.
     /// </summary>
     [ConfigField("生成的 PDF 和图片保留时间，0 表示不自动清理。", Label = "文件保留分钟", Type = "number", Min = 0)]

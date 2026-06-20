@@ -28,6 +28,7 @@ public sealed class JmParserPlugin : PluginBase
     private OutputMode _outputMode = OutputMode.File;
     private bool _sendCover = true;
     private double _coverBlurRadius = 12;
+    private string _publicBaseUrl = string.Empty;
     private string _proxy = string.Empty;
     private int _maxConcurrency = 16;
 
@@ -79,6 +80,7 @@ public sealed class JmParserPlugin : PluginBase
         _outputMode = OutputModeParser.Parse(config.OutputMode);
         _sendCover = config.SendCover;
         _coverBlurRadius = Math.Max(0, config.CoverBlurRadius);
+        _publicBaseUrl = config.PublicBaseUrl.Trim();
         if (_downloader is null ||
             !string.Equals(_proxy, proxy, StringComparison.Ordinal) ||
             _maxConcurrency != maxConcurrency)
@@ -90,7 +92,7 @@ public sealed class JmParserPlugin : PluginBase
             _pdfBuilder = new JmPdfBuilder(_downloader, _dataDir);
         }
 
-        BotLog.Info($"[JmParser] 配置已应用: output_mode={config.OutputMode}, send_cover={_sendCover}, cover_blur_radius={_coverBlurRadius:0.##}。");
+        BotLog.Info($"[JmParser] 配置已应用: output_mode={config.OutputMode}, public_base_url={(_publicBaseUrl.Length == 0 ? "<host>" : _publicBaseUrl)}, send_cover={_sendCover}, cover_blur_radius={_coverBlurRadius:0.##}。");
     }
 
     private async Task HandleGroupAsync(GroupIncomingMessage message)
@@ -147,6 +149,7 @@ public sealed class JmParserPlugin : PluginBase
 
             var expiresAfter = _retention.TotalMinutes > 0 ? _retention : (TimeSpan?)null;
             var previewUrl = Context.WebHost.RegisterFile(Name, "pdf", result.PdfPath, expiresAfter, "application/pdf");
+            previewUrl = ApplyPublicBaseUrl(previewUrl);
             result = result with { PreviewUrl = previewUrl };
 
             return result;
@@ -167,7 +170,7 @@ public sealed class JmParserPlugin : PluginBase
 
     private async Task<ImageOutgoingSegment?> RenderPreviewAsync(PdfBuildResult result)
     {
-        if (Context.Render is null || string.IsNullOrWhiteSpace(result.CoverPath) || !File.Exists(result.CoverPath))
+        if (Context.Render is null || string.IsNullOrWhiteSpace(result.CoverPath) )
         {
             return null;
         }
@@ -177,6 +180,27 @@ public sealed class JmParserPlugin : PluginBase
             new ControlRenderOptions(RenderTheme.Auto)).ConfigureAwait(false);
 
         return new ImageOutgoingSegment("base64://" + Convert.ToBase64String(png));
+    }
+
+    private string ApplyPublicBaseUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(_publicBaseUrl) ||
+            !Uri.TryCreate(url, UriKind.Absolute, out var original))
+        {
+            return url;
+        }
+
+        var baseUrl = _publicBaseUrl.EndsWith('/') ? _publicBaseUrl : _publicBaseUrl + "/";
+        if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var publicBase))
+        {
+            BotLog.Warning($"[JmParser] public_base_url 无效，已使用宿主预览地址: {_publicBaseUrl}");
+            return url;
+        }
+
+        var token = original.Segments.LastOrDefault()?.Trim('/');
+        if (string.IsNullOrWhiteSpace(token)) return url;
+
+        return new Uri(publicBase, token).ToString();
     }
 
     private static string BuildStartingMessage(string albumId) => $"开始解析 JM{albumId}，下载和生成 PDF 可能需要一段时间。";
