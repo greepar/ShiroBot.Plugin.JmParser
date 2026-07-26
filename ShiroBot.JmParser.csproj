@@ -10,14 +10,21 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Avalonia" Version="12.0.4">
+        <PackageReference Include="Avalonia" Version="12.1.0">
             <ExcludeAssets>runtime</ExcludeAssets>
             <PrivateAssets>none</PrivateAssets>
             <IncludeAssets>compile; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
         <PackageReference Include="PDFsharp" Version="6.2.4" />
-        <PackageReference Include="ShiroBot.SDK" Version="0.6.0-rc1" />
-        <PackageReference Include="ShiroBot.AvaloniaSdk" Version="0.6.0" />
+        <ProjectReference Include="..\ShiroBot.SDK\ShiroBot.SDK.csproj">
+            <Private>false</Private>
+        </ProjectReference>
+        <ProjectReference Include="..\ShiroBot.Qq.Model\ShiroBot.Qq.Model.csproj">
+            <Private>false</Private>
+        </ProjectReference>
+        <ProjectReference Include="..\ShiroBot.AvaloniaSdk\ShiroBot.AvaloniaSdk.csproj">
+            <Private>false</Private>
+        </ProjectReference>
         <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
         <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.44.1">
             <PrivateAssets>all</PrivateAssets>

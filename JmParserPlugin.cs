@@ -2,8 +2,9 @@ using System.Reflection;
 using ShiroBot.AvaloniaSdk;
 using ShiroBot.JmParser.Service;
 using ShiroBot.JmParser.Views;
-using ShiroBot.Model.Common;
+using ShiroBot.Qq.Model;
 using ShiroBot.SDK.Abstractions;
+using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Core;
 using ShiroBot.SDK.Plugin;
 
@@ -95,7 +96,7 @@ public sealed class JmParserPlugin : PluginBase
         BotLog.Info($"[JmParser] 配置已应用: output_mode={config.OutputMode}, public_base_url={(_publicBaseUrl.Length == 0 ? "<host>" : _publicBaseUrl)}, send_cover={_sendCover}, cover_blur_radius={_coverBlurRadius:0.##}。");
     }
 
-    private async Task HandleGroupAsync(GroupIncomingMessage message)
+    private async Task HandleGroupAsync(MessageEvent message)
     {
         if (!CommandParser.TryParseAlbumId(message.GetPlainText(), out var albumId))
         {
@@ -103,28 +104,34 @@ public sealed class JmParserPlugin : PluginBase
             return;
         }
 
-        BotLog.Info($"[JmParser] JM{albumId} 开始处理，群 {message.Group.GroupId}，用户 {message.SenderId}。");
-        await Context.Message.ReplyAsync(message, BuildStartingMessage(albumId)).ConfigureAwait(false);
+        BotLog.Info($"[JmParser] JM{albumId} 开始处理，群 {message.Channel.Id}，用户 {message.Sender.Id}。");
+        var startingMessage = await Context.Message.ReplyAsync(message, BuildStartingMessage(albumId)).ConfigureAwait(false);
         try
         {
             var result = await BuildPdfAsync(albumId).ConfigureAwait(false);
+            string? previewMessageId = null;
             if (_sendCover)
             {
                 var preview = await RenderPreviewAsync(result).ConfigureAwait(false);
                 if (preview is not null)
                 {
-                    await Context.Message.ReplyAsync(message, preview).ConfigureAwait(false);
+                    var previewMessage = await Context.Message.ReplyAsync(message, preview).ConfigureAwait(false);
+                    previewMessageId = previewMessage.MessageId;
                 }
             }
 
             string? fileId = null;
             if (_outputMode is OutputMode.File or OutputMode.Both)
             {
-                var upload = await Context.File.UploadGroupFileAsync(message.Group.GroupId, new Uri(result.PdfPath).AbsoluteUri, result.FileName).ConfigureAwait(false);
-                fileId = upload.FileId;
+                var qqFile = RequireQqFileApi();
+                fileId = await qqFile.UploadGroupFileAsync(GroupId(message), new Uri(result.PdfPath).AbsoluteUri, result.FileName).ConfigureAwait(false);
             }
 
-            await Context.Message.ReplyAsync(message, BuildSuccessMessage(albumId, fileId, result)).ConfigureAwait(false);
+            var successMessage = await Context.Message.ReplyAsync(message, BuildSuccessMessage(albumId, fileId, result)).ConfigureAwait(false);
+            if (_outputMode is OutputMode.Url)
+            {
+                SubscribeDownloadReplies(message, result, startingMessage.MessageId, previewMessageId, successMessage.MessageId);
+            }
         }
         catch (Exception ex)
         {
@@ -168,7 +175,7 @@ public sealed class JmParserPlugin : PluginBase
         return message;
     }
 
-    private async Task<ImageOutgoingSegment?> RenderPreviewAsync(PdfBuildResult result)
+    private async Task<ImageSegment?> RenderPreviewAsync(PdfBuildResult result)
     {
         if (Context.Render is null || string.IsNullOrWhiteSpace(result.CoverPath) )
         {
@@ -179,8 +186,63 @@ public sealed class JmParserPlugin : PluginBase
             new PreviewCardViewModel(result, _coverBlurRadius),
             new ControlRenderOptions(RenderTheme.Auto)).ConfigureAwait(false);
 
-        return new ImageOutgoingSegment("base64://" + Convert.ToBase64String(png));
+        return new ImageSegment("base64://" + Convert.ToBase64String(png));
     }
+
+    private void SubscribeDownloadReplies(
+        MessageEvent sourceMessage,
+        PdfBuildResult result,
+        params string?[] messageIds)
+    {
+        var subscriptions = new List<IReplySubscription>();
+        var started = 0;
+
+        async Task DownloadAsync(MessageEvent reply)
+        {
+            if (reply.IsDirect ||
+                reply.Channel.Id != sourceMessage.Channel.Id ||
+                !CanRequestDownload(reply.Sender.Id) ||
+                Interlocked.Exchange(ref started, 1) != 0)
+            {
+                return;
+            }
+
+            foreach (var subscription in subscriptions)
+            {
+                subscription.Dispose();
+            }
+
+            await Context.Message.ReplyAsync(reply, "开始上传 PDF...").ConfigureAwait(false);
+            var qqFile = RequireQqFileApi();
+            await qqFile.UploadGroupFileAsync(
+                GroupId(sourceMessage),
+                new Uri(result.PdfPath).AbsoluteUri,
+                result.FileName).ConfigureAwait(false);
+        }
+
+        foreach (var messageId in messageIds)
+        {
+            if (messageId is null) continue;
+            subscriptions.Add(Context.Message.SubscribeReply(
+                messageId,
+                "dl",
+                TimeSpan.FromMinutes(10),
+                DownloadAsync,
+                disposeOnReply: false));
+        }
+    }
+
+    private bool CanRequestDownload(string userId) =>
+        Context.IsAdmin(userId);
+
+    private IQqFileApi RequireQqFileApi() =>
+        Context.GetAdapterExtension<IQqFileApi>()
+        ?? throw new InvalidOperationException("当前适配器不支持 QQ 群文件上传(IQqFileApi)。");
+
+    private static long GroupId(MessageEvent message) =>
+        long.TryParse(message.Channel.Id, out var id)
+            ? id
+            : throw new InvalidOperationException($"非 QQ 数字群号: {message.Channel.Id}");
 
     private string ApplyPublicBaseUrl(string url)
     {

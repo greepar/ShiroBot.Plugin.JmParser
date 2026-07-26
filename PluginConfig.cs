@@ -22,7 +22,7 @@ public sealed class PluginConfig
     /// Optional public base URL used when sending preview links, for example: https://jm.example.com:500
     /// Leave empty to use the host generated URL.
     /// </summary>
-    [ConfigField("发送临时预览链接时使用的公网域名或 URL 前缀，留空使用宿主生成的地址。", Label = "公网预览地址", Type = "string", Placeholder = "https://jm.example.com:500")]
+    [ConfigField("发送临时预览链接时使用的公网域名或 URL 前缀，留空使用宿主生成的地址，需要转发到宿主http://{监听地址}/plugin/JmParser/pdf。", Label = "公网预览地址", Type = "string", Placeholder = "https://jm.example.com:500")]
     public string PublicBaseUrl { get; set; } = string.Empty;
 
     /// <summary>
