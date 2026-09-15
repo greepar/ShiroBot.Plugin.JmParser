@@ -2,7 +2,7 @@ using System.Reflection;
 using ShiroBot.AvaloniaSdk;
 using ShiroBot.JmParser.Service;
 using ShiroBot.JmParser.Views;
-using ShiroBot.Qq.Model;
+using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Abstractions;
 using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Core;
@@ -12,7 +12,7 @@ namespace ShiroBot.JmParser;
 
 [BotPlugin(id:"JmParser",
     Description = "JM 解析插件",
-    Version = "1.1.0",
+    Version = "1.2.0",
     Author = "greepar",
     Category = PluginCategory.Media,
     GithubRepo = "greepar/ShiroBot.Plugin.JmParser",
@@ -123,7 +123,7 @@ public sealed class JmParserPlugin : PluginBase
             string? fileId = null;
             if (_outputMode is OutputMode.File or OutputMode.Both)
             {
-                var qqFile = RequireQqFileApi();
+                var qqFile = RequireQFileApi();
                 fileId = await qqFile.UploadGroupFileAsync(GroupId(message), new Uri(result.PdfPath).AbsoluteUri, result.FileName).ConfigureAwait(false);
             }
 
@@ -213,7 +213,7 @@ public sealed class JmParserPlugin : PluginBase
             }
 
             await Context.Message.ReplyAsync(reply, "开始上传 PDF...").ConfigureAwait(false);
-            var qqFile = RequireQqFileApi();
+            var qqFile = RequireQFileApi();
             await qqFile.UploadGroupFileAsync(
                 GroupId(sourceMessage),
                 new Uri(result.PdfPath).AbsoluteUri,
@@ -235,9 +235,9 @@ public sealed class JmParserPlugin : PluginBase
     private bool CanRequestDownload(string userId) =>
         Context.IsAdmin(userId);
 
-    private IQqFileApi RequireQqFileApi() =>
-        Context.GetAdapterExtension<IQqFileApi>()
-        ?? throw new InvalidOperationException("当前适配器不支持 QQ 群文件上传(IQqFileApi)。");
+    private IQFileApi RequireQFileApi() =>
+        Context.GetAdapterExtension<IQFileApi>()
+        ?? throw new InvalidOperationException("当前适配器不支持 QQ 群文件上传(IQFileApi)。");
 
     private static long GroupId(MessageEvent message) =>
         long.TryParse(message.Channel.Id, out var id)

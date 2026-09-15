@@ -34,7 +34,7 @@ jobs:
       - name: Publish
         run: dotnet publish "$PROJECT_DIR" --configuration Release
 
-      - name: Collect Plugin DLL
+      - name: Collect Plugin Package
         shell: bash
         run: |
           PROJECT="$(basename "$(ls *.csproj | head -1)" .csproj)"
@@ -44,12 +44,42 @@ jobs:
             ls -la "$PUBLISH_DIR"
             exit 1
           fi
-          mkdir -p release
-          cp "$PLUGIN_DLL" release/
 
-      - name: Upload DLL to Release
+          mapfile -t DLLS < <(find "$PUBLISH_DIR" -maxdepth 1 -type f -name '*.dll' -printf '%f\n' | sort)
+          if [ "${#DLLS[@]}" -ne 1 ] || [ "${DLLS[0]}" != "${PROJECT}.dll" ]; then
+            printf 'Unexpected managed DLLs in publish output:\n%s\n' "${DLLS[*]}"
+            exit 1
+          fi
+
+          if find "$PUBLISH_DIR" -maxdepth 1 -type f \( -name 'ShiroBot.SDK*' -o -name 'ShiroBot.Model.*' -o -name 'Avalonia*' -o -name 'SkiaSharp*' -o -name 'HarfBuzzSharp*' -o -name 'MicroCom*' \) -print -quit | grep -q .; then
+            echo 'Host-provided assemblies leaked into publish output.'
+            exit 1
+          fi
+
+          mkdir -p release
+          cp "$PLUGIN_DLL" "release/${PROJECT}.dll"
+          if [ -f "$PUBLISH_DIR/${PROJECT}.pdb" ]; then
+            cp "$PUBLISH_DIR/${PROJECT}.pdb" "release/${PROJECT}.pdb"
+          fi
+          (
+            cd release
+            zip -9 "${PROJECT}.zip" "${PROJECT}.dll" "${PROJECT}.pdb" 2>/dev/null || zip -9 "${PROJECT}.zip" "${PROJECT}.dll"
+            rm -f "${PROJECT}.dll" "${PROJECT}.pdb"
+          )
+
+      - name: Verify Release Asset
+        shell: bash
+        run: |
+          PROJECT="$(basename "$(ls *.csproj | head -1)" .csproj)"
+          mapfile -t FILES < <(unzip -Z1 "release/${PROJECT}.zip" | sort)
+          if [ "${#FILES[@]}" -lt 1 ] || [ "${#FILES[@]}" -gt 2 ] || [ "${FILES[0]}" != "${PROJECT}.dll" ] || { [ "${#FILES[@]}" -eq 2 ] && [ "${FILES[1]}" != "${PROJECT}.pdb" ]; }; then
+            printf 'Release ZIP must contain only the plugin DLL and optional PDB:\n%s\n' "${FILES[*]}"
+            exit 1
+          fi
+
+      - name: Upload Plugin Package to Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
           target_commitish: ${{ github.sha }}
-          files: release/*.dll
+          files: release/*.zip

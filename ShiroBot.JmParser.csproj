@@ -5,74 +5,22 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
         <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+        <ShiroBotPluginPackagingEnabled>true</ShiroBotPluginPackagingEnabled>
+        <ShiroBotPluginSharedAssemblies>ShiroBot.Model.Discord;ShiroBot.Model.QQ;ShiroBot.Model.Telegram</ShiroBotPluginSharedAssemblies>
         <!--        在此处配置你的宿主插件目录-->
-        <HostPluginDir>ShiroBot\plugins\$(AssemblyName)\</HostPluginDir>
+        <HostPluginDir>..\..\ShiroBot\Core\bin\Debug\$(TargetFramework)\plugins\$(AssemblyName)\</HostPluginDir>
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Avalonia" Version="12.1.0">
+        <PackageReference Include="Avalonia" Version="12.1.2">
             <ExcludeAssets>runtime</ExcludeAssets>
             <PrivateAssets>none</PrivateAssets>
             <IncludeAssets>compile; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
         <PackageReference Include="PDFsharp" Version="6.2.4" />
-        <ProjectReference Include="..\ShiroBot.SDK\ShiroBot.SDK.csproj">
-            <Private>false</Private>
-        </ProjectReference>
-        <ProjectReference Include="..\ShiroBot.Qq.Model\ShiroBot.Qq.Model.csproj">
-            <Private>false</Private>
-        </ProjectReference>
-        <ProjectReference Include="..\ShiroBot.AvaloniaSdk\ShiroBot.AvaloniaSdk.csproj">
-            <Private>false</Private>
-        </ProjectReference>
+        <PackageReference Include="ShiroBot.SDK" Version="0.9.1" />
         <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
-        <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.44.1">
-            <PrivateAssets>all</PrivateAssets>
-            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-        </PackageReference>
     </ItemGroup>
-
-    <Target Name="RepackPlugin" AfterTargets="Publish" Condition="'$(Configuration)'=='Release'">
-        <PropertyGroup>
-            <MergedPluginFile>$(PublishDir)$(AssemblyName).merged.dll</MergedPluginFile>
-            <MergedPluginPdb>$(PublishDir)$(AssemblyName).merged.pdb</MergedPluginPdb>
-            <PublishedPluginFile>$(PublishDir)$(AssemblyName).dll</PublishedPluginFile>
-            <PublishedPluginPdb>$(PublishDir)$(AssemblyName).pdb</PublishedPluginPdb>
-        </PropertyGroup>
-
-        <Delete Files="$(MergedPluginFile);$(MergedPluginPdb)" />
-        <Copy SourceFiles="$(TargetPath)" DestinationFiles="$(PublishedPluginFile)" OverwriteReadOnlyFiles="true" />
-        <Copy SourceFiles="$(TargetDir)$(AssemblyName).pdb" DestinationFiles="$(PublishedPluginPdb)" OverwriteReadOnlyFiles="true" Condition="Exists('$(TargetDir)$(AssemblyName).pdb')" />
-
-        <ItemGroup>
-            <RepackInput Include="$(PublishedPluginFile)" />
-            <RepackDependency Include="$(PublishDir)*.dll" />
-            <RepackDependency Remove="$(PublishedPluginFile);$(MergedPluginFile);$(PublishDir)Avalonia*.dll;$(PublishDir)HarfBuzzSharp.dll;$(PublishDir)MicroCom.Runtime.dll;$(PublishDir)SkiaSharp.dll;$(PublishDir)ShiroBot.AvaloniaSdk.dll;$(PublishDir)ShiroBot.SDK.dll;$(PublishDir)ShiroBot.Model.dll;$(PublishDir)System*.dll;$(PublishDir)mscorlib.dll;$(PublishDir)netstandard.dll" />
-            <RepackInput Include="@(RepackDependency)" />
-        </ItemGroup>
-
-        <ILRepack
-                TargetKind="Dll"
-                OutputFile="$(MergedPluginFile)"
-                InputAssemblies="@(RepackInput)"
-                LibraryPath="$(PublishDir);$(TargetDir);@(ReferencePath->'%(RootDir)%(Directory)')"
-                Internalize="false"
-                Parallel="true"
-                DebugInfo="true" />
-
-        <Copy SourceFiles="$(MergedPluginFile)" DestinationFiles="$(PublishDir)$(AssemblyName).dll" OverwriteReadOnlyFiles="true" />
-        <Copy SourceFiles="$(MergedPluginPdb)" DestinationFiles="$(PublishedPluginPdb)" OverwriteReadOnlyFiles="true" Condition="Exists('$(MergedPluginPdb)')" />
-        <Delete Files="$(MergedPluginFile)" />
-        <Delete Files="$(MergedPluginPdb)" />
-        <Delete Files="@(RepackDependency)" />
-
-        <ItemGroup>
-            <PublishHostProvidedOutput Include="$(PublishDir)Avalonia*.dll;$(PublishDir)Avalonia*.pdb;$(PublishDir)HarfBuzzSharp.dll;$(PublishDir)HarfBuzzSharp.pdb;$(PublishDir)MicroCom.Runtime.dll;$(PublishDir)MicroCom.Runtime.pdb;$(PublishDir)SkiaSharp.dll;$(PublishDir)SkiaSharp.pdb;$(PublishDir)ShiroBot.AvaloniaSdk.dll;$(PublishDir)ShiroBot.AvaloniaSdk.pdb;$(PublishDir)ShiroBot.SDK.dll;$(PublishDir)ShiroBot.SDK.pdb;$(PublishDir)ShiroBot.Model.dll;$(PublishDir)ShiroBot.Model.pdb" />
-        </ItemGroup>
-
-        <Delete Files="@(PublishHostProvidedOutput)" />
-        <RemoveDir Directories="$(PublishDir)runtimes" />
-    </Target>
 
     <Target Name="CopyPluginToHost"
             AfterTargets="Build"
