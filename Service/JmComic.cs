@@ -5,7 +5,9 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Formats;
 using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Memory;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using ShiroBot.SDK.Abstractions;
@@ -167,11 +169,13 @@ internal sealed class JmComicDownloader : IDisposable
     private static readonly bool UseCdnDirectFirst = true;
 
     private readonly HttpClient _http;
-    private readonly int _maxConcurrency;
+    private readonly SemaphoreSlim _imageGate;
     private List<string>? _domains;
 
     public JmComicDownloader(string? proxy, int maxConcurrency)
     {
+        maxConcurrency = Math.Clamp(maxConcurrency, 1, 64);
+        _imageGate = new SemaphoreSlim(maxConcurrency);
         var handler = new SocketsHttpHandler
         {
             AllowAutoRedirect = true,
@@ -195,7 +199,12 @@ internal sealed class JmComicDownloader : IDisposable
         };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
         _http.DefaultRequestHeaders.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9,en;q=0.8");
-        _maxConcurrency = maxConcurrency;
+    }
+
+    internal JmComicDownloader(HttpClient http, int maxConcurrency)
+    {
+        _http = http;
+        _imageGate = new SemaphoreSlim(Math.Clamp(maxConcurrency, 1, 64));
     }
 
     public async Task<(string Html, string Url)> GetAlbumHtmlAsync(string albumId)
@@ -250,20 +259,10 @@ internal sealed class JmComicDownloader : IDisposable
 
         // 并发下载
         BotLog.Info($"[JmParser] JM{albumId} 已解析 {chapterPhotos.Sum(item => item.Photo.ImageUrls.Count)} 张图片，待下载 {pending.Count} 张。");
-        var semaphore = new SemaphoreSlim(_maxConcurrency);
-        var downloadTasks = pending.Select(async item =>
+        var downloadTasks = pending.Select(item =>
         {
-            await semaphore.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                var bytes = await GetBytesAsync(item.Url, item.Referer).ConfigureAwait(false);
-                var num = JmImageDecoder.CalculateScrambleNum(item.ScrambleId, item.PhotoId, Path.GetFileNameWithoutExtension(item.ImageName));
-                JmImageDecoder.DecodeAndSaveJpeg(bytes, num, item.SavePath);
-            }
-            finally
-            {
-                semaphore.Release();
-            }
+            var num = JmImageDecoder.CalculateScrambleNum(item.ScrambleId, item.PhotoId, Path.GetFileNameWithoutExtension(item.ImageName));
+            return DownloadAndSaveImageAsync(item.Url, item.Referer, num, item.SavePath);
         });
 
         await Task.WhenAll(downloadTasks).ConfigureAwait(false);
@@ -398,10 +397,9 @@ internal sealed class JmComicDownloader : IDisposable
     {
         try
         {
-            var bytes = await GetBytesAsync(url, referer).ConfigureAwait(false);
             var imageName = Path.GetFileNameWithoutExtension(new Uri(url).AbsolutePath);
             var num = JmImageDecoder.CalculateScrambleNum(DefaultScrambleId, photoId, imageName);
-            JmImageDecoder.DecodeAndSaveJpeg(bytes, num, savePath);
+            await DownloadAndSaveImageAsync(url, referer, num, savePath).ConfigureAwait(false);
             return true;
         }
         catch
@@ -523,13 +521,38 @@ internal sealed class JmComicDownloader : IDisposable
     private const int SlowSpeedThreshold = 10 * 1024; // 10 KB/s
     private const int SlowDurationSeconds = 3;
 
-    private async Task<byte[]> GetBytesAsync(string url, string referer)
+    // A downloader-wide gate also bounds simultaneous albums and CDN probes.
+    internal async Task DownloadAndSaveImageAsync(string url, string referer, int num, string savePath)
+    {
+        await _imageGate.WaitAsync().ConfigureAwait(false);
+        var temporary = savePath + "." + Guid.NewGuid().ToString("N") + ".download";
+        var output = temporary + ".jpg";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(savePath)!);
+            await DownloadToFileAsync(url, referer, temporary).ConfigureAwait(false);
+            JmImageDecoder.DecodeAndSaveJpeg(temporary, num, output);
+            File.Move(output, savePath, overwrite: true);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(temporary);
+                File.Delete(output);
+            }
+            finally { _imageGate.Release(); }
+        }
+    }
+
+    private async Task DownloadToFileAsync(string url, string referer, string path)
     {
         for (var attempt = 1; attempt <= MaxImageRetries; attempt++)
         {
             try
             {
-                return await DownloadWithSpeedCheckAsync(url, referer).ConfigureAwait(false);
+                await DownloadWithSpeedCheckAsync(url, referer, path).ConfigureAwait(false);
+                return;
             }
             catch (SlowDownloadException) when (attempt < MaxImageRetries)
             {
@@ -548,7 +571,7 @@ internal sealed class JmComicDownloader : IDisposable
         throw new InvalidOperationException($"下载失败，已重试 {MaxImageRetries} 次: {url}");
     }
 
-    private async Task<byte[]> DownloadWithSpeedCheckAsync(string url, string referer)
+    private async Task DownloadWithSpeedCheckAsync(string url, string referer, string path)
     {
         using var downloadCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         using var monitorCts = new CancellationTokenSource();
@@ -564,21 +587,26 @@ internal sealed class JmComicDownloader : IDisposable
         await using var stream = await resp.Content.ReadAsStreamAsync(downloadCts.Token).ConfigureAwait(false);
 
         var contentLength = resp.Content.Headers.ContentLength ?? -1;
-        await using var ms = new MemoryStream(contentLength > 0 ? (int)contentLength : 8192);
+        const long maxBytes = 32 * 1024 * 1024;
+        if (contentLength > maxBytes) throw new InvalidDataException("图片压缩文件超过 32 MB 限制。");
+        await using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 8192, FileOptions.Asynchronous);
+        long downloaded = 0;
 
         var buffer = new byte[81920];
-        var speedCheck = MonitorSpeedAsync(ms, monitorCts.Token, () => downloadCts.Cancel());
+        var speedCheck = MonitorSpeedAsync(() => Interlocked.Read(ref downloaded), monitorCts.Token, () => downloadCts.Cancel());
         try
         {
             int bytesRead;
             while ((bytesRead = await stream.ReadAsync(buffer, downloadCts.Token).ConfigureAwait(false)) > 0)
             {
-                await ms.WriteAsync(buffer.AsMemory(0, bytesRead), downloadCts.Token).ConfigureAwait(false);
+                if (downloaded + bytesRead > maxBytes) throw new InvalidDataException("图片压缩文件超过 32 MB 限制。");
+                await file.WriteAsync(buffer.AsMemory(0, bytesRead), downloadCts.Token).ConfigureAwait(false);
+                Interlocked.Add(ref downloaded, bytesRead);
             }
 
             monitorCts.Cancel();
             await AwaitMonitorShutdownAsync(speedCheck).ConfigureAwait(false);
-            return ms.ToArray();
+            await file.FlushAsync(downloadCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (speedCheck.IsFaulted && HasSlowDownloadException(speedCheck.Exception))
         {
@@ -592,7 +620,7 @@ internal sealed class JmComicDownloader : IDisposable
         }
     }
 
-    private static async Task MonitorSpeedAsync(MemoryStream ms, CancellationToken ct, Action cancelDownload)
+    private static async Task MonitorSpeedAsync(Func<long> getPosition, CancellationToken ct, Action cancelDownload)
     {
         var lastPosition = 0L;
         var slowStart = DateTime.MinValue;
@@ -602,7 +630,7 @@ internal sealed class JmComicDownloader : IDisposable
             await Task.Delay(1000, ct).ConfigureAwait(false);
             if (ct.IsCancellationRequested) break;
 
-            var currentPosition = ms.Position;
+            var currentPosition = getPosition();
             var bytesInSecond = currentPosition - lastPosition;
             lastPosition = currentPosition;
 
@@ -884,36 +912,70 @@ internal static class JmImageDecoder
         return num * 2 + 2;
     }
 
-    public static void DecodeAndSaveJpeg(byte[] bytes, int num, string savePath)
-    {
-        using var src = Image.Load<Rgba32>(bytes);
-        src.Mutate(x => x.AutoOrient());
+    internal const long MaxImagePixels = 16_000_000;
+    private static readonly Configuration ImageConfiguration = CreateImageConfiguration();
 
-        using var decoded = num == 0 ? src.Clone() : DecodeScrambledImage(src, num);
-        Directory.CreateDirectory(Path.GetDirectoryName(savePath)!);
-        decoded.SaveAsJpeg(savePath, new JpegEncoder { Quality = 92 });
+    private static Configuration CreateImageConfiguration()
+    {
+        var configuration = Configuration.Default.Clone();
+        // Keep this plugin's retained pixel pool small without changing other plugins.
+        configuration.MemoryAllocator = MemoryAllocator.Create(new MemoryAllocatorOptions
+        {
+            MaximumPoolSizeMegabytes = 32,
+            AllocationLimitMegabytes = 128
+        });
+        return configuration;
     }
 
-    private static Image<Rgba32> DecodeScrambledImage(Image<Rgba32> src, int num)
+    public static void DecodeAndSaveJpeg(string inputPath, int num, string savePath)
     {
-        var width = src.Width;
-        var height = src.Height;
-        var decoded = new Image<Rgba32>(width, height, Color.White);
-        var over = (int)(height % num);
+        var options = new DecoderOptions { Configuration = ImageConfiguration, MaxFrames = 1 };
+        var info = Image.Identify(options, inputPath);
+        if (info.Width <= 0 || info.Height <= 0 || (long)info.Width * info.Height > MaxImagePixels)
+            throw new InvalidDataException($"图片尺寸 {info.Width}×{info.Height} 超过 {MaxImagePixels} 像素限制。");
 
-        for (var i = 0; i < num; i++)
+        using var src = Image.Load<Rgba32>(options, inputPath);
+        src.Mutate(x => x.AutoOrient());
+        Directory.CreateDirectory(Path.GetDirectoryName(savePath)!);
+        var encoder = new JpegEncoder { Quality = 92 };
+        if (num == 0)
         {
-            var move = (int)Math.Floor(height / (double)num);
-            var ySrc = height - move * (i + 1) - over;
-            var yDst = move * i;
-            if (i == 0) move += over;
-            else yDst += over;
-
-            using var piece = src.Clone(x => x.Crop(new Rectangle(0, ySrc, width, move)));
-            decoded.Mutate(x => x.DrawImage(piece, new Point(0, yDst), 1f));
+            src.SaveAsJpeg(savePath, encoder);
+            return;
         }
 
-        return decoded;
+        // Preserve the old white backdrop for transparent scrambled PNG/WebP pixels.
+        src.Mutate(x => x.BackgroundColor(Color.White));
+        using var decoded = DecodeScrambledImage(src, num);
+        decoded.SaveAsJpeg(savePath, encoder);
+    }
+
+    internal static Image<Rgba32> DecodeScrambledImage(Image<Rgba32> src, int num)
+    {
+        if (num <= 0) throw new ArgumentOutOfRangeException(nameof(num));
+        var decoded = new Image<Rgba32>(src.Configuration, src.Width, src.Height);
+        try
+        {
+            var over = src.Height % num;
+            var stripHeight = src.Height / num;
+            src.ProcessPixelRows(decoded, (source, destination) =>
+            {
+                for (var i = 0; i < num; i++)
+                {
+                    var ySrc = src.Height - stripHeight * (i + 1) - over;
+                    var yDst = stripHeight * i + (i == 0 ? 0 : over);
+                    var rows = stripHeight + (i == 0 ? over : 0);
+                    for (var row = 0; row < rows; row++)
+                        source.GetRowSpan(ySrc + row).CopyTo(destination.GetRowSpan(yDst + row));
+                }
+            });
+            return decoded;
+        }
+        catch
+        {
+            decoded.Dispose();
+            throw;
+        }
     }
 }
 

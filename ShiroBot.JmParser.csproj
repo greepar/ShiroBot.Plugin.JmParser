@@ -10,6 +10,11 @@
         <RootNamespace>ShiroBot.JmParser</RootNamespace>
     </PropertyGroup>
 
+    <ItemGroup>
+        <Compile Remove="Tests/**/*.cs" />
+        <InternalsVisibleTo Include="ShiroBot.JmParser.Tests" />
+    </ItemGroup>
+
     <!-- 让 partial class 在 IDE 中折叠到 .axaml 之下，仅影响 Solution Explorer 显示 -->
     <ItemGroup>
         <Compile Update="Views\PreviewCard.axaml.cs">
@@ -18,14 +23,14 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Avalonia" Version="12.0.4">
+        <PackageReference Include="Avalonia" Version="12.1.2">
             <ExcludeAssets>runtime</ExcludeAssets>
             <PrivateAssets>none</PrivateAssets>
             <IncludeAssets>compile; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
         <PackageReference Include="PDFsharp" Version="6.2.4" />
-        <PackageReference Include="ShiroBot.SDK" Version="0.5.0" />
-        <PackageReference Include="ShiroBot.AvaloniaSdk" Version="0.5.0" />
+        <PackageReference Include="ShiroBot.SDK" Version="0.9.8" />
+
         <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
         <PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.44.1">
             <PrivateAssets>all</PrivateAssets>
@@ -46,7 +51,7 @@
         <CopyToPublishDirectory>Never</CopyToPublishDirectory>
       </None>
     </ItemGroup>
-    
+
     <Target Name="RepackPlugin" AfterTargets="Publish" Condition="'$(Configuration)'=='Release'">
         <PropertyGroup>
             <MergedPluginFile>$(PublishDir)$(AssemblyName).merged.dll</MergedPluginFile>
@@ -64,8 +69,15 @@
             <RepackDependency Include="$(PublishDir)*.dll"
                               Exclude="$(PublishedPluginFile);
                                        $(MergedPluginFile);
+                                       $(PublishDir)Avalonia*.dll;
+                                       $(PublishDir)SkiaSharp*.dll;
+                                       $(PublishDir)HarfBuzzSharp*.dll;
+                                       $(PublishDir)MicroCom*.dll;
                                        $(PublishDir)ShiroBot.SDK.dll;
                                        $(PublishDir)ShiroBot.Model.dll;
+                                       $(PublishDir)ShiroBot.Model.QQ.dll;
+                                       $(PublishDir)ShiroBot.Model.Discord.dll;
+                                       $(PublishDir)ShiroBot.Model.Telegram.dll;
                                        $(PublishDir)System*.dll;
                                        $(PublishDir)mscorlib.dll;
                                        $(PublishDir)netstandard.dll" />
@@ -86,6 +98,11 @@
         <Delete Files="$(MergedPluginFile)" />
         <Delete Files="$(MergedPluginPdb)" />
         <Delete Files="@(RepackDependency)" />
+        <Delete Files="$(PublishDir)ShiroBot.SDK.dll;$(PublishDir)ShiroBot.SDK.pdb;$(PublishDir)ShiroBot.Model.QQ.dll;$(PublishDir)ShiroBot.Model.QQ.pdb;$(PublishDir)ShiroBot.Model.Discord.dll;$(PublishDir)ShiroBot.Model.Discord.pdb;$(PublishDir)ShiroBot.Model.Telegram.dll;$(PublishDir)ShiroBot.Model.Telegram.pdb" />
+        <ItemGroup>
+            <HostRenderingAssets Include="$(PublishDir)Avalonia*.dll;$(PublishDir)Avalonia*.pdb;$(PublishDir)SkiaSharp*.dll;$(PublishDir)SkiaSharp*.pdb;$(PublishDir)HarfBuzzSharp*.dll;$(PublishDir)HarfBuzzSharp*.pdb;$(PublishDir)MicroCom*.dll;$(PublishDir)MicroCom*.pdb;$(PublishDir)runtimes/**/*SkiaSharp*;$(PublishDir)runtimes/**/*HarfBuzzSharp*;$(PublishDir)runtimes/**/*AvaloniaNative*" />
+        </ItemGroup>
+        <Delete Files="@(HostRenderingAssets);$(PublishDir)$(AssemblyName).deps.json" />
     </Target>
 
     <Target Name="CopyPluginToHost"

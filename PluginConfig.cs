@@ -25,10 +25,10 @@ public sealed class PluginConfig
     public int DeleteAfterMinutes { get; set; } = 60;
 
     /// <summary>
-    /// Max concurrent downloads for images. Default 16.
+    /// Max concurrent downloads for images. Default 2.
     /// </summary>
-    [ConfigField("图片下载最大并发数。数值越大速度可能越快，但失败率也可能增加。", Label = "最大并发下载", Type = "number", Min = 1, Max = 64)]
-    public int MaxConcurrency { get; set; } = 16;
+    [ConfigField("图片下载和解码共用的最大并发数，建议 2–4；大图和高并发会显著增加内存峰值。", Label = "最大并发下载", Type = "number", Min = 1, Max = 64)]
+    public int MaxConcurrency { get; set; } = 2;
 
     /// <summary>
     /// Whether to send the rendered cover preview image.

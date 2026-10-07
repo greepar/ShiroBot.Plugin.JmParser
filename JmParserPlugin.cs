@@ -1,11 +1,16 @@
 using System.Reflection;
 using ShiroBot.AvaloniaSdk;
+using ShiroBot.Model.QQ;
 using ShiroBot.JmParser.Service;
 using ShiroBot.JmParser.Views;
-using ShiroBot.Model.Common;
+using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Abstractions;
 using ShiroBot.SDK.Core;
+
 using ShiroBot.SDK.Plugin;
+
+[assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "0.9.8")]
+[assembly: ShiroBotApiCompatibility("0.9.2", "0.9.2")]
 
 namespace ShiroBot.JmParser;
 
@@ -15,7 +20,8 @@ namespace ShiroBot.JmParser;
     Author = "greepar",
     Category = PluginCategory.Media,
     GithubRepo = "greepar/ShiroBot.Plugin.JmParser",
-    IsPluginSingleFile = false)]
+    IsPluginSingleFile = false,
+    SharedAssemblies = "ShiroBot.Model.QQ")]
 public sealed class JmParserPlugin : PluginBase
 {
     private const string Command = "#jm";
@@ -29,7 +35,7 @@ public sealed class JmParserPlugin : PluginBase
     private bool _sendCover = true;
     private double _coverBlurRadius = 12;
     private string _proxy = string.Empty;
-    private int _maxConcurrency = 16;
+    private int _maxConcurrency = 2;
 
     public override string Name => "JmParser";
 
@@ -93,7 +99,7 @@ public sealed class JmParserPlugin : PluginBase
         BotLog.Info($"[JmParser] 配置已应用: output_mode={config.OutputMode}, send_cover={_sendCover}, cover_blur_radius={_coverBlurRadius:0.##}。");
     }
 
-    private async Task HandleGroupAsync(GroupIncomingMessage message)
+    private async Task HandleGroupAsync(MessageEvent message)
     {
         if (!CommandParser.TryParseAlbumId(message.GetPlainText(), out var albumId))
         {
@@ -101,7 +107,7 @@ public sealed class JmParserPlugin : PluginBase
             return;
         }
 
-        BotLog.Info($"[JmParser] JM{albumId} 开始处理，群 {message.Group.GroupId}，用户 {message.SenderId}。");
+        BotLog.Info($"[JmParser] JM{albumId} 开始处理，群 {message.Channel.Id}，用户 {message.Sender.Id}。");
         await Context.Message.ReplyAsync(message, BuildStartingMessage(albumId)).ConfigureAwait(false);
         try
         {
@@ -118,8 +124,9 @@ public sealed class JmParserPlugin : PluginBase
             string? fileId = null;
             if (_outputMode is OutputMode.File or OutputMode.Both)
             {
-                var upload = await Context.File.UploadGroupFileAsync(message.Group.GroupId, new Uri(result.PdfPath).AbsoluteUri, result.FileName).ConfigureAwait(false);
-                fileId = upload.FileId;
+                var fileApi = Context.GetAdapterExtension<IQFileApi>()
+                    ?? throw new NotSupportedException("当前 QQ 适配器不支持群文件上传。");
+                fileId = await fileApi.UploadGroupFileAsync(message.Channel.Id, new Uri(result.PdfPath).AbsoluteUri, result.FileName).ConfigureAwait(false);
             }
 
             await Context.Message.ReplyAsync(message, BuildSuccessMessage(albumId, fileId, result)).ConfigureAwait(false);
@@ -165,7 +172,7 @@ public sealed class JmParserPlugin : PluginBase
         return message;
     }
 
-    private async Task<ImageOutgoingSegment?> RenderPreviewAsync(PdfBuildResult result)
+    private async Task<ImageSegment?> RenderPreviewAsync(PdfBuildResult result)
     {
         if (Context.Render is null || string.IsNullOrWhiteSpace(result.CoverPath) || !File.Exists(result.CoverPath))
         {
@@ -176,7 +183,7 @@ public sealed class JmParserPlugin : PluginBase
             new PreviewCardViewModel(result, _coverBlurRadius),
             new ControlRenderOptions(RenderTheme.Auto)).ConfigureAwait(false);
 
-        return new ImageOutgoingSegment("base64://" + Convert.ToBase64String(png));
+        return new ImageSegment("base64://" + Convert.ToBase64String(png));
     }
 
     private static string BuildStartingMessage(string albumId) => $"开始解析 JM{albumId}，下载和生成 PDF 可能需要一段时间。";
