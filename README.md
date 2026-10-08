@@ -13,3 +13,15 @@ JM 漫画解析插件，通过 `#jm <号码>` 下载漫画并生成 PDF，可选
 选择 `output_mode = "url"` 或 `"both"`，可设置 `preview_public_base_url = "https://jm.example.com"`，留空继承宿主公开地址。域名或实际 IP 可带端口；若填写完整 URL，只取协议、域名和端口，路径后缀自动生成。链接格式为 `https://jm.example.com/plugin/JmParser/随机标识`，保留原有过期、文件清理和卸载失效行为。
 
 监听仍在宿主 `[api].listen_urls` 配置，例如 `["http://0.0.0.0:7001"]`。`0.0.0.0` 表示监听所有网卡，不能作为发给用户的公开地址；域名需代理到此宿主。去掉 pdf 路径需要宿主支持空文件路由前缀的新构建。
+
+可用 `preview_path_name = "jm"` 自选内部路径名称。开启 `preview_use_root_path = true` 后，公开链接为 `https://jm.qwq.lu:6/随机标识`，必须填写 `preview_public_base_url` 并配置反向代理。地址省略协议时默认 HTTPS，HTTP 地址请显式填写 `http://`。
+
+例如 Nginx 已在此域名和端口上监听，可配置：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:7001/plugin/jm/;
+}
+```
+
+上例把公开 `/fmdt` 转发到宿主 `/plugin/jm/fmdt`。`preview_path_name` 必须与 Nginx 转发路径一致；修改路径名称后，旧链接的反代规则需保留到旧链接过期。关闭开关则发送完整 `/plugin/jm/随机标识` 路径。

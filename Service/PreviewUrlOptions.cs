@@ -6,6 +6,7 @@ internal static class PreviewUrlOptions
     {
         var text = value?.Trim() ?? string.Empty;
         if (text.Length == 0) return string.Empty;
+        if (!text.Contains("://", StringComparison.Ordinal)) text = "https://" + text;
         if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") ||
             uri.Host is "0.0.0.0" or "::" or "[::]" or "*" ||
             uri.UserInfo.Length != 0)
@@ -13,9 +14,23 @@ internal static class PreviewUrlOptions
         return uri.GetLeftPart(UriPartial.Authority);
     }
 
-    public static string UsePublicBase(string registeredUrl, string publicBaseUrl)
+    public static string NormalizePathName(string value)
+    {
+        var name = value.Trim();
+        if (name.Length is < 1 or > 64 || name.Any(ch => !char.IsAsciiLetterOrDigit(ch) && ch is not '-' and not '_'))
+            throw new InvalidOperationException("预览路径名称必须为 1–64 个字母、数字、横线或下划线。");
+        return name;
+    }
+
+    public static string UsePublicBase(string registeredUrl, string publicBaseUrl, bool useRootPath = false)
     {
         var registered = new Uri(registeredUrl, UriKind.Absolute);
+        if (useRootPath)
+        {
+            if (publicBaseUrl.Length == 0)
+                throw new InvalidOperationException("省略插件路径时必须填写预览公开地址，并配置反向代理路径转发。");
+            return publicBaseUrl + "/" + registered.Segments[^1];
+        }
         return publicBaseUrl.Length == 0 ? registeredUrl :
             publicBaseUrl + registered.AbsolutePath;
     }

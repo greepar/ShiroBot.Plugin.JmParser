@@ -33,6 +33,10 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
     private double _coverBlurRadius = 12;
     private string _proxy = string.Empty;
     private string _previewPublicBaseUrl = string.Empty;
+    private string _previewPathName = "JmParser";
+    private bool _previewUseRootPath;
+    private readonly HashSet<string> _previewOwners = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _previewOwnersLock = new();
     private int _maxConcurrency = 2;
 
     public override string Name => "JmParser";
@@ -64,6 +68,11 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
         _cleanupTimer?.Dispose();
         _pdfBuilder = null;
         _downloader?.Dispose();
+        lock (_previewOwnersLock)
+        {
+            foreach (var owner in _previewOwners) Context.WebHost.UnregisterOwner(owner);
+            _previewOwners.Clear();
+        }
         Context.WebHost.UnregisterOwner(Name);
 
         _cleanupTimer = null;
@@ -75,10 +84,15 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
     private void ApplyConfig(PluginConfig config)
     {
         var publicBaseUrl = PreviewUrlOptions.Normalize(config.PreviewPublicBaseUrl);
+        var previewPathName = PreviewUrlOptions.NormalizePathName(config.PreviewPathName);
+        if (config.PreviewUseRootPath && publicBaseUrl.Length == 0)
+            throw new InvalidOperationException("省略插件路径时必须填写预览公开地址，并配置反向代理路径转发。");
         var proxy = config.Proxy.Trim();
         var maxConcurrency = Math.Clamp(config.MaxConcurrency, 1, 64);
 
         _previewPublicBaseUrl = publicBaseUrl;
+        _previewPathName = previewPathName;
+        _previewUseRootPath = config.PreviewUseRootPath;
         _retention = TimeSpan.FromMinutes(config.DeleteAfterMinutes);
         _cleanupTimer?.Dispose();
         _cleanupTimer = null;
@@ -162,8 +176,10 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
             }
 
             var expiresAfter = _retention.TotalMinutes > 0 ? _retention : (TimeSpan?)null;
-            var previewUrl = Context.WebHost.RegisterFile(Name, string.Empty, result.PdfPath, expiresAfter, "application/pdf");
-            previewUrl = PreviewUrlOptions.UsePublicBase(previewUrl, _previewPublicBaseUrl);
+            var owner = _previewPathName;
+            lock (_previewOwnersLock) _previewOwners.Add(owner);
+            var previewUrl = Context.WebHost.RegisterFile(owner, string.Empty, result.PdfPath, expiresAfter, "application/pdf");
+            previewUrl = PreviewUrlOptions.UsePublicBase(previewUrl, _previewPublicBaseUrl, _previewUseRootPath);
             result = result with { PreviewUrl = previewUrl };
 
             return result;

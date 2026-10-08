@@ -17,6 +17,25 @@ public sealed class PreviewUrlTests
     }
 
     [TestMethod]
+    public void RootPublicLinkUsesOnlyTokenAndRequiresAnExplicitOrigin()
+    {
+        var registered = "http://127.0.0.1:7001/plugin/jm/fmdt";
+        Assert.AreEqual("https://jm.qwq.lu:6/fmdt",
+            PreviewUrlOptions.UsePublicBase(registered, PreviewUrlOptions.Normalize("jm.qwq.lu:6"), true));
+        Assert.AreEqual("http://192.168.1.10:7001/fmdt",
+            PreviewUrlOptions.UsePublicBase(registered, "http://192.168.1.10:7001", true));
+        Assert.ThrowsException<InvalidOperationException>(() => PreviewUrlOptions.UsePublicBase(registered, "", true));
+    }
+
+    [TestMethod]
+    public void PathNamesAreExplicitSafeSegments()
+    {
+        Assert.AreEqual("jm", PreviewUrlOptions.NormalizePathName(" jm "));
+        foreach (var name in new[] { "", "../jm", "jm/pdf", "jm?x", new string('x', 65) })
+            Assert.ThrowsException<InvalidOperationException>(() => PreviewUrlOptions.NormalizePathName(name));
+    }
+
+    [TestMethod]
     public void PublicDomainRejectsListenerWildcardsAndInvalidUrls()
     {
         foreach (var value in new[] { "http://0.0.0.0:7001", "http://[::]:7001", "ftp://jm.example.com",
