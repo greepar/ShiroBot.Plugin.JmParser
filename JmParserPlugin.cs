@@ -1,6 +1,6 @@
+using ShiroBot.SDK.Config;
 using System.Reflection;
 using ShiroBot.AvaloniaSdk;
-using ShiroBot.Model.QQ;
 using ShiroBot.JmParser.Service;
 using ShiroBot.JmParser.Views;
 using ShiroBot.SDK.Models;
@@ -9,26 +9,23 @@ using ShiroBot.SDK.Core;
 
 using ShiroBot.SDK.Plugin;
 
-[assembly: RequiresShiroBotPackage("shirobot.model.qq", MinimumVersion = "0.9.8")]
 [assembly: ShiroBotApiCompatibility("0.9.2", "0.9.2")]
 
 namespace ShiroBot.JmParser;
 
 [BotPlugin(id:"JmParser",
     Description = "JM 解析插件",
-    Version = "1.3.0",
+    Version = "1.3.1",
     Author = "greepar",
     Category = PluginCategory.Media,
     GithubRepo = "greepar/ShiroBot.Plugin.JmParser",
-    IsPluginSingleFile = false,
-    SharedAssemblies = "ShiroBot.Model.QQ")]
-public sealed class JmParserPlugin : PluginBase
+    IsPluginSingleFile = false)]
+public sealed class JmParserPlugin : PluginBase<PluginConfig>
 {
     private const string Command = "#jm";
     private JmComicDownloader? _downloader;
     private JmPdfBuilder? _pdfBuilder;
     private Timer? _cleanupTimer;
-    private IDisposable? _configWatchSubscription;
     private string _dataDir = string.Empty;
     private TimeSpan _retention = TimeSpan.FromMinutes(60);
     private OutputMode _outputMode = OutputMode.File;
@@ -39,20 +36,20 @@ public sealed class JmParserPlugin : PluginBase
 
     public override string Name => "JmParser";
 
+    protected override Task OnConfigChangedAsync(PluginConfig previous, PluginConfig current, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ApplyConfig(current);
+        return Task.CompletedTask;
+    }
+
     protected override Task LoadAsync()
     {
-        var config = Context.Config.Load<PluginConfig>();
+        var config = Settings;
         var pluginDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? AppContext.BaseDirectory;
         _dataDir = Path.Combine(pluginDir, "data", "jm");
         Directory.CreateDirectory(_dataDir);
         ApplyConfig(config);
-        _configWatchSubscription = Context.Config.Watch<PluginConfig>(ApplyConfig);
-
-        if (config.DeleteAfterMinutes > 0)
-        {
-            JmRetentionCleaner.Cleanup(_dataDir, _retention);
-            _cleanupTimer = new Timer(_ => JmRetentionCleaner.Cleanup(_dataDir, _retention), null, TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(10));
-        }
 
         GroupCommands.MapPrefix(Command, HandleGroupAsync);
 
@@ -63,14 +60,12 @@ public sealed class JmParserPlugin : PluginBase
 
     protected override Task OnUnloadAsync()
     {
-        _configWatchSubscription?.Dispose();
         _cleanupTimer?.Dispose();
         _pdfBuilder = null;
         _downloader?.Dispose();
         Context.WebHost.UnregisterOwner(Name);
 
         _cleanupTimer = null;
-        _configWatchSubscription = null;
         _downloader = null;
         BotLog.Info("[JmParser] 已卸载。");
         return Task.CompletedTask;
@@ -82,6 +77,15 @@ public sealed class JmParserPlugin : PluginBase
         var maxConcurrency = Math.Clamp(config.MaxConcurrency, 1, 64);
 
         _retention = TimeSpan.FromMinutes(config.DeleteAfterMinutes);
+        _cleanupTimer?.Dispose();
+        _cleanupTimer = null;
+        if (config.DeleteAfterMinutes > 0)
+        {
+            JmRetentionCleaner.Cleanup(_dataDir, _retention);
+            _cleanupTimer = new Timer(_ => JmRetentionCleaner.Cleanup(_dataDir, _retention), null,
+                TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(10));
+        }
+
         _outputMode = OutputModeParser.Parse(config.OutputMode);
         _sendCover = config.SendCover;
         _coverBlurRadius = Math.Max(0, config.CoverBlurRadius);
@@ -121,15 +125,17 @@ public sealed class JmParserPlugin : PluginBase
                 }
             }
 
-            string? fileId = null;
+            var fileSent = false;
             if (_outputMode is OutputMode.File or OutputMode.Both)
             {
-                var fileApi = Context.GetAdapterExtension<IQFileApi>()
-                    ?? throw new NotSupportedException("当前 QQ 适配器不支持群文件上传。");
-                fileId = await fileApi.UploadGroupFileAsync(message.Channel.Id, new Uri(result.PdfPath).AbsoluteUri, result.FileName).ConfigureAwait(false);
+                var sent = await Context.Message.ReplyAsync(message,
+                    new FileSegment(new Uri(result.PdfPath).AbsoluteUri) { FileName = result.FileName }).ConfigureAwait(false);
+                if (!sent.IsSuccess)
+                    throw new InvalidOperationException(sent.ErrorMessage ?? "PDF 文件发送失败。");
+                fileSent = true;
             }
 
-            await Context.Message.ReplyAsync(message, BuildSuccessMessage(albumId, fileId, result)).ConfigureAwait(false);
+            await Context.Message.ReplyAsync(message, BuildSuccessMessage(albumId, fileSent, result)).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -160,11 +166,11 @@ public sealed class JmParserPlugin : PluginBase
         }
     }
 
-    private string BuildSuccessMessage(string albumId, string? fileId, PdfBuildResult result)
+    private string BuildSuccessMessage(string albumId, bool fileSent, PdfBuildResult result)
     {
-        var message = string.IsNullOrWhiteSpace(fileId)
-            ? $"JM{albumId} 已生成 PDF。"
-            : $"JM{albumId} 已生成并上传为 PDF。FileId: {fileId}";
+        var message = fileSent
+            ? $"JM{albumId} 已生成并发送 PDF。"
+            : $"JM{albumId} 已生成 PDF。";
         if (string.IsNullOrWhiteSpace(result.PreviewUrl)) return message;
         var retentionText = _retention.TotalMinutes > 0 ? $"，链接约 {_retention.TotalMinutes:0} 分钟后失效" : string.Empty;
         message += $"\n临时预览: {result.PreviewUrl}{retentionText}";
