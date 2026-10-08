@@ -18,6 +18,10 @@ public sealed class PluginConfig
     [ConfigField("file 上传 PDF，url 发送临时预览链接，both 两者都发送。", Label = "输出模式", Type = "select", Options = ["file", "url", "both"])]
     public string OutputMode { get; set; } = "file";
 
+    [ConfigField("预览链接的公开基础地址，例如 https://jm.example.com 或 http://192.168.1.10:7001；留空继承宿主地址。只取协议、域名和端口，忽略填写的路径后缀；地址须代理到宿主，不用于监听，不能填 0.0.0.0。", Label = "预览公开地址", Placeholder = "https://jm.example.com")]
+    public string PreviewPublicBaseUrl { get; set; } = string.Empty;
+
+
     /// <summary>
     /// Minutes to keep generated PDFs and downloaded images. Set 0 or less to disable cleanup.
     /// </summary>

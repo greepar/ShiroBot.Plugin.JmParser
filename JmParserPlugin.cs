@@ -32,6 +32,7 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
     private bool _sendCover = true;
     private double _coverBlurRadius = 12;
     private string _proxy = string.Empty;
+    private string _previewPublicBaseUrl = string.Empty;
     private int _maxConcurrency = 2;
 
     public override string Name => "JmParser";
@@ -73,9 +74,11 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
 
     private void ApplyConfig(PluginConfig config)
     {
+        var publicBaseUrl = PreviewUrlOptions.Normalize(config.PreviewPublicBaseUrl);
         var proxy = config.Proxy.Trim();
         var maxConcurrency = Math.Clamp(config.MaxConcurrency, 1, 64);
 
+        _previewPublicBaseUrl = publicBaseUrl;
         _retention = TimeSpan.FromMinutes(config.DeleteAfterMinutes);
         _cleanupTimer?.Dispose();
         _cleanupTimer = null;
@@ -159,7 +162,8 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
             }
 
             var expiresAfter = _retention.TotalMinutes > 0 ? _retention : (TimeSpan?)null;
-            var previewUrl = Context.WebHost.RegisterFile(Name, "pdf", result.PdfPath, expiresAfter, "application/pdf");
+            var previewUrl = Context.WebHost.RegisterFile(Name, string.Empty, result.PdfPath, expiresAfter, "application/pdf");
+            previewUrl = PreviewUrlOptions.UsePublicBase(previewUrl, _previewPublicBaseUrl);
             result = result with { PreviewUrl = previewUrl };
 
             return result;
