@@ -15,7 +15,7 @@ namespace ShiroBot.JmParser;
 
 [BotPlugin(id:"JmParser",
     Description = "JM 解析插件",
-    Version = "1.3.1",
+    Version = "1.3.2",
     Author = "greepar",
     Category = PluginCategory.Media,
     GithubRepo = "greepar/ShiroBot.Plugin.JmParser",
@@ -35,8 +35,7 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
     private string _previewPublicBaseUrl = string.Empty;
     private string _previewPathName = "JmParser";
     private bool _previewUseRootPath;
-    private readonly HashSet<string> _previewOwners = new(StringComparer.OrdinalIgnoreCase);
-    private readonly object _previewOwnersLock = new();
+    private PreviewFileRoutes? _previewFiles;
     private int _maxConcurrency = 2;
 
     public override string Name => "JmParser";
@@ -54,6 +53,7 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
         var pluginDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? AppContext.BaseDirectory;
         _dataDir = Path.Combine(pluginDir, "data", "jm");
         Directory.CreateDirectory(_dataDir);
+        _previewFiles = new PreviewFileRoutes(Context.WebHost);
         ApplyConfig(config);
 
         GroupCommands.MapPrefix(Command, HandleGroupAsync);
@@ -68,11 +68,8 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
         _cleanupTimer?.Dispose();
         _pdfBuilder = null;
         _downloader?.Dispose();
-        lock (_previewOwnersLock)
-        {
-            foreach (var owner in _previewOwners) Context.WebHost.UnregisterOwner(owner);
-            _previewOwners.Clear();
-        }
+        _previewFiles?.Dispose();
+        _previewFiles = null;
         Context.WebHost.UnregisterOwner(Name);
 
         _cleanupTimer = null;
@@ -177,8 +174,8 @@ public sealed class JmParserPlugin : PluginBase<PluginConfig>
 
             var expiresAfter = _retention.TotalMinutes > 0 ? _retention : (TimeSpan?)null;
             var owner = _previewPathName;
-            lock (_previewOwnersLock) _previewOwners.Add(owner);
-            var previewUrl = Context.WebHost.RegisterFile(owner, string.Empty, result.PdfPath, expiresAfter, "application/pdf");
+            var previewFiles = _previewFiles ?? throw new InvalidOperationException("JM 预览路由尚未初始化。");
+            var previewUrl = previewFiles.Register(owner, result.PdfPath, expiresAfter);
             previewUrl = PreviewUrlOptions.UsePublicBase(previewUrl, _previewPublicBaseUrl, _previewUseRootPath);
             result = result with { PreviewUrl = previewUrl };
 
