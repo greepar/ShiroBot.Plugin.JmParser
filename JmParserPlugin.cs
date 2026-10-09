@@ -15,7 +15,7 @@ namespace ShiroBot.JmParser;
 
 [BotPlugin(id:"JmParser",
     Description = "JM 解析插件",
-    Version = "1.3.2",
+    Version = "1.3.3",
     Author = "greepar",
     Category = PluginCategory.Media,
     GithubRepo = "greepar/ShiroBot.Plugin.JmParser",
